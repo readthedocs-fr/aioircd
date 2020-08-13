@@ -2,11 +2,17 @@
 
 import argparse
 import asyncio
+import functools
 import logging
+import re
 import warnings
+import textwrap
+from abc import ABCMeta, abstractmethod
+
+nick_re = re.compile(r"[a-zA-Z][a-zA-Z0-9\-_]{0,8}")
+chann_re = re.compile(r"#[a-zA-Z0-9\-_]{1,49}")
 
 logger = logging.getLogger(__name__)
-
 
 def main():
     cli = argparse.ArgumentParser()
@@ -24,6 +30,10 @@ def main():
     logging.root.handlers.clear()
     logging.root.addHandler(stdout)
     logging.root.setLevel(verbosity)
+    logging.addLevelName(logging.INFO, 'MSG')
+    logging.msg = functools.partial(logging.log, 'MSG')
+    logger.msg = functools.partial(logger.log, 'MSG')
+
     if verbosity == 0:
         logging.captureWarnings(True)
         warnings.filterwarnings('default')
@@ -45,6 +55,7 @@ class Server:
     def __init__(self, host, port):
         self.host = host
         self.port = port
+        self.local = ServerLocal()
         self._serv = None
 
     async def serve(self):
@@ -63,11 +74,10 @@ class Server:
         await self._serv.wait_closed()
         raise SystemExit(0)
 
-
     async def handle(self, reader, writer):
         peeraddr = writer.get_extra_info('peername')[0]
         logger.info("New connection from %s", peeraddr)
-        user = User(reader, writer)
+        user = User(self.local, reader, writer)
         try:
             await user.serve()
         except Exception:
@@ -75,13 +85,58 @@ class Server:
         finally:
             writer.close()
             await writer.wait_closed()
+        self.local.users.pop(user.nick, None)
         logger.info("Connection with %s closed", peeraddr)
 
 
+class ServerLocal:
+    def __init__(self):
+        self.users = {}
+        self.channels = {}
+
+
+class Channel:
+    def __init__(self, name):
+        self._name = None
+        self.name = name
+        self.users = []
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, name):
+        self.local.channels[name] = self.local.channels.pop(self._name, self)
+        self._name = name
+
+    async def send_all(self, msg):
+        for user in self.users:
+            user.writer.write(f"{msg}\r\n".encode())
+        await asyncio.gather([user.writer.drain() for user in self.users])
+
+
 class User:
-    def __init__(self, reader, writer):
+    def __init__(self, local, reader, writer):
+        self.local = local
         self.reader = reader
         self.writer = writer
+        self.state = UserConnectedState(self)
+        self._nick = None
+
+    @property
+    def nick(self):
+        return self._nick
+
+    @nick.setter
+    def nick(self, nick):
+        self.local.users[nick] = self.local.users.pop(self._nick, self)
+        self._nick = nick
+
+    def __str__(self):
+        if self.nick:
+            return self.nick
+        return self.writer.get_extra_info('peername')[0]
 
     async def serve(self):
         buffer = b""
@@ -93,13 +148,198 @@ class User:
                 raise MemoryError("Message exceed 1024 bytes")
 
             for line in lines:
-                msg = parse(line)
-
+                cmd, *args = line.decode().split()
+                func = getattr(self.state, cmd, None)
+                if getattr(func, 'command', False):
+                    logger.msg("%s < %s %s", self, line.decode())
+                    try:
+                        await func(*args)
+                    except IRCException as exc:
+                        logger.warning("%s sent an invalid command: %s", self, exc.args[0])
+                        await self.send(exc.args[0])
+                else:
+                    logger.warning("%s sent an unknown command: %s", self, cmd)
 
         self.writer.write_eof()
         await self.writer.drain()
 
+    async def send(self, msg):
+        self.writer.write(f"{msg}\r\n".encode())
+        await self.writer.drain()
 
-def parse(line: bytes):
-    """ tokeniser + parser """
-    return line
+
+def command(func):
+    func.command = True
+    return func
+
+class UserMetaState(metaclass=ABCMeta):
+    def __init__(self, user):
+        self._user = user
+
+    def __getattr__(self, attr):
+        return getattr(self._user, attr)
+
+    def __setattr__(self, attr, value):
+        if hasattr(self._user, attr):
+            return setattr(self._user, attr, value)
+        super().__setattr__(attr, value)
+
+    @command
+    @abstractmethod
+    async def PONG(self, args):
+        pass
+
+    @command
+    @abstractmethod
+    async def NICK(self, args):
+        pass
+
+    @command
+    @abstractmethod
+    async def JOIN(self, args):
+        pass
+
+    @command
+    @abstractmethod
+    async def PRIVMSG(self, args):
+        pass
+
+
+class UserConnectedState(UserMetaState):
+    """
+    TCP connection established but user not registered yet
+    """
+
+    @command
+    async def PONG(self, args):
+        pass
+
+    @command
+    async def NICK(self, args):
+        if not args:
+            raise ErrNoNicknameGiven()
+        nick = args[0]
+        if nick in self.local.users:
+            raise ErrNicknameInUse(nick)
+        if not nick_re.match(nick):
+            raise ErrErroneusNickname(nick)
+        self.nick = nick
+        self.state = UserRegisteredState(self._client)
+
+    @command
+    async def JOIN(self, args):
+        # illegal
+
+        raise ErrNoLogin()
+
+    @command
+    async def PRIVMSG(self, args):
+        # illegal
+
+        raise ErrNoLogin()
+
+
+class UserRegisteredState(UserMetaState):
+    """
+    User connected and registered
+    """
+
+    @command
+    async def PONG(self, args):
+        pass
+
+    @command
+    async def NICK(self, args):
+        if not args:
+            raise ErrNoNicknameGiven()
+        nick = args[0]
+        if nick in self.local.users:
+            raise ErrNicknameInUse(nick)
+        if not nick_re.match(nick):
+            raise ErrErroneusNickname(nick)
+        self.nick = nick
+
+    @command
+    async def JOIN(self, args):
+        if not args:
+            raise ErrNeedMoreParams("JOIN")
+        for channel in args:
+            if not chann_re.match(channel):
+                # ERR_NOSUCHCHANNEL
+                await self.send(ErrNoSuchChannel.format(channel))
+
+            chann = self.local.channels.get(channel)
+            if not chann:
+                chann = Channel(channel)
+            chann.users.append(self._user)
+
+            nicks = " ".join(user.nick for user in chann.users)
+            maxwidth = 1024 - len("353  :\r\n") - len(channel)
+
+            for line in textwrap.wrap(nicks, width=maxwidth):
+                await self.send(f"353 {channel} :{line}")
+
+            await self.send(f"366 {channel} :End of NAMES list")
+
+            await chann.send_all(f":{self.nick} JOIN {channel}")
+
+    @command
+    async def PRIVMSG(self, args):
+        pass
+
+
+class IRCException(Exception):
+    def __init__(self, *args):
+        super().__init__(type(self).format(*args))
+
+    @classmethod
+    def format(cls, *args):
+        return "{code} {error}".format(
+            code=cls.code,
+            error=cls.msg % args,
+        )
+
+
+class ErrNoNicknameGiven(IRCException):
+    msg = ":No nickname given"
+    code = "431"
+
+class ErrErroneusNickname(IRCException):
+    msg = "%s :Erroneous nickname"
+    code = "432"
+
+class ErrNicknameInUse(IRCException):
+    msg = "%s :Nickname is already in use"
+    code = "433"
+
+class ErrNoLogin(IRCException):
+    mdg = ":User not logged in"
+    code = "444"
+
+class ErrNeedMoreParams(IRCException):
+    msg = "%s :Not enough parameters"
+    code = "461"
+
+class ErrNoSuchChannel(IRCException):
+    msg = "%s :No such channel"
+    code = "403"
+
+class ErrNoRecipient(IRCException):
+    msg = ":No recipient given (%s)"
+    code = "411"
+
+class ErrNoTextToSend(IRCException):
+    msg = ":No text to send"
+    code = "412"
+
+class ErrUnknownCommand(IRCException):
+    msg = "%s :Unknown command"
+    code = "421"
+
+# ERR_NORECIPIENT
+# srv_send(b"411 :No recipient given (<command>)\r\n")
+
+# ERR_NOTEXTTOSEND
+# srv_send(b"412 :No text to send\r\n")
+
+# 421 ERR_UNKNOWNCOMMAND

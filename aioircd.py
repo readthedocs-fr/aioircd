@@ -265,7 +265,6 @@ class UserRegisteredState(UserMetaState):
             raise ErrNeedMoreParams("JOIN")
         for channel in args:
             if not chann_re.match(channel):
-                # ERR_NOSUCHCHANNEL
                 await self.send(ErrNoSuchChannel.format(channel))
 
             chann = self.local.channels.get(channel)
@@ -285,7 +284,23 @@ class UserRegisteredState(UserMetaState):
 
     @command
     async def PRIVMSG(self, args):
-        pass
+        msg = args.split(":",1)
+        if msg[0] in [""," "]:
+            raise ErrNoRecipient("PRIVMSG")
+        if len(msg)<2 or msg[1] in [""," "]:
+            raise ErrNoTextToSend()
+        user,message = msg[2:]
+        if user.startswith("#"):
+            chann = self.local.channels.get(user)
+            if chann == None:
+                raise ErrNoSuchChannel(user)
+            await chann.send_all(f": {self.nick} PRIVMSG {user} :{message}")
+        else:
+            receiver = self.local.users.get(user)
+            if receiver == None:
+                raise ErrErroneusNickname(user)
+            await receiver.send(f": {self.nick} PRIVMSG {user} :{message}")
+        await self.send(f"301 {self.nick} :{message}")
 
 
 class IRCException(Exception):
@@ -335,11 +350,3 @@ class ErrNoTextToSend(IRCException):
 class ErrUnknownCommand(IRCException):
     msg = "%s :Unknown command"
     code = "421"
-
-# ERR_NORECIPIENT
-# srv_send(b"411 :No recipient given (<command>)\r\n")
-
-# ERR_NOTEXTTOSEND
-# srv_send(b"412 :No text to send\r\n")
-
-# 421 ERR_UNKNOWNCOMMAND

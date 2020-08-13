@@ -284,23 +284,23 @@ class UserRegisteredState(UserMetaState):
 
     @command
     async def PRIVMSG(self, args):
-        msg = args.split(":",1)
-        if msg[0] in [""," "]:
+        if not args or args[0] == "":
             raise ErrNoRecipient("PRIVMSG")
-        if len(msg)<2 or msg[1] in [""," "]:
+        user,*mess = args
+        message = " ".join(mess)
+        if not message or not message.startswith(":") or len(message)<2:
             raise ErrNoTextToSend()
-        user,message = msg[2:]
         if user.startswith("#"):
             chann = self.local.channels.get(user)
             if chann == None:
                 raise ErrNoSuchChannel(user)
-            await chann.send_all(f": {self.nick} PRIVMSG {user} :{message}")
+            await chann.send_all(f":{self.nick} PRIVMSG {user} :{message[1:]}")
         else:
             receiver = self.local.users.get(user)
             if receiver == None:
                 raise ErrErroneusNickname(user)
-            await receiver.send(f": {self.nick} PRIVMSG {user} :{message}")
-        await self.send(f"301 {self.nick} :{message}")
+            await receiver.send(f":{self.nick} PRIVMSG {user} :{message[1:]}")
+        await self.send(f"301 {self.nick} :{message[1:]}")
 
 
 class IRCException(Exception):

@@ -30,9 +30,10 @@ def main():
     logging.root.handlers.clear()
     logging.root.addHandler(stdout)
     logging.root.setLevel(verbosity)
-    logging.addLevelName(logging.INFO, 'MSG')
-    logging.msg = functools.partial(logging.log, 'MSG')
-    logger.msg = functools.partial(logger.log, 'MSG')
+    logging.MSG = logging.INFO + 1
+    logging.addLevelName(logging.MSG, 'MSG')
+    logging.msg = functools.partial(logging.log, logging.MSG)
+    logger.msg = functools.partial(logger.log, logging.MSG)
 
     if verbosity == 0:
         logging.captureWarnings(True)
@@ -96,7 +97,8 @@ class ServerLocal:
 
 
 class Channel:
-    def __init__(self, name):
+    def __init__(self, name, local):
+        self.local = local
         self._name = None
         self.name = name
         self.users = []
@@ -113,7 +115,16 @@ class Channel:
     async def send_all(self, msg):
         for user in self.users:
             user.writer.write(f"{msg}\r\n".encode())
-        await asyncio.gather([user.writer.drain() for user in self.users])
+        await asyncio.wait([user.writer.drain() for user in self.users])
+
+    async def send_all_except(self, msg, skip_user):
+        for user in self.users:
+            if user is skip_user:
+                continue
+            if user.nick == skip_user:
+                continue
+            user.writer.write(f"{msg}\r\n".encode())
+        await asyncio.wait([user.writer.drain() for user in self.users])
 
 
 class User:
@@ -140,7 +151,14 @@ class User:
 
     async def serve(self):
         buffer = b""
-        while chunk := await self.reader.read(1024):
+        while True:
+            try:
+                chunk = await self.reader.read(1024)
+            except ConnectionResetError:
+                break
+            if not chunk:
+                break
+
             buffer += chunk
             *lines, buffer = buffer.split(b'\r\n')
 
@@ -148,12 +166,12 @@ class User:
                 raise MemoryError("Message exceed 1024 bytes")
 
             for line in lines:
+                logger.msg("%s < %s", self, line)
                 cmd, *args = line.decode().split()
                 func = getattr(self.state, cmd, None)
                 if getattr(func, 'command', False):
-                    logger.msg("%s < %s %s", self, line.decode())
                     try:
-                        await func(*args)
+                        await func(args)
                     except IRCException as exc:
                         logger.warning("%s sent an invalid command: %s", self, exc.args[0])
                         await self.send(exc.args[0])
@@ -174,7 +192,7 @@ def command(func):
 
 class UserMetaState(metaclass=ABCMeta):
     def __init__(self, user):
-        self._user = user
+        object.__setattr__(self, "_user", user)
 
     def __getattr__(self, attr):
         return getattr(self._user, attr)
@@ -224,7 +242,7 @@ class UserConnectedState(UserMetaState):
         if not nick_re.match(nick):
             raise ErrErroneusNickname(nick)
         self.nick = nick
-        self.state = UserRegisteredState(self._client)
+        self.state = UserRegisteredState(self._user)
 
     @command
     async def JOIN(self, args):
@@ -269,18 +287,17 @@ class UserRegisteredState(UserMetaState):
 
             chann = self.local.channels.get(channel)
             if not chann:
-                chann = Channel(channel)
+                chann = Channel(channel, self.local)
             chann.users.append(self._user)
 
-            nicks = " ".join(user.nick for user in chann.users)
-            maxwidth = 1024 - len("353  :\r\n") - len(channel)
-
-            for line in textwrap.wrap(nicks, width=maxwidth):
-                await self.send(f"353 {channel} :{line}")
-
-            await self.send(f"366 {channel} :End of NAMES list")
-
             await chann.send_all(f":{self.nick} JOIN {channel}")
+
+            nicks = " ".join(user.nick for user in chann.users)
+            prefix = f": 353 {self.nick} = {channel} :"
+            maxwidth = 1024 - len(prefix) - 2  # -2 is \r\n
+            for line in textwrap.wrap(nicks, width=maxwidth):
+                await self.send(prefix + line)
+            await self.send(f": 366 {self.nick} {channel} :End of /NAMES list.")
 
     @command
     async def PRIVMSG(self, args):
@@ -296,7 +313,7 @@ class UserRegisteredState(UserMetaState):
             chann = self.local.channels.get(user)
             if not chann:
                 raise ErrNoSuchChannel(user)
-            await chann.send_all(f":{self.nick} PRIVMSG {user} {msg}")
+            await chann.send_all_except(f":{self.nick} PRIVMSG {user} {msg}", self._user)
         else:
             receiver = self.local.users.get(user)
             if not receiver:

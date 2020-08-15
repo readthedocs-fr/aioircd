@@ -24,12 +24,14 @@ listed bellow.
 The server by default only logs `WARNING` level messages and above. You
 can increase the verbosity by repeating the `-v` option.
 
-### Specification
+### Architecture
 
 This minimalist IRC server was developped using the RFCs [2810], [2811],
 [2812], and [2813].
 
 It implements the `NICK`, `JOIN`, `PRIVMSG`, and `QUIT` commands.
+
+![class diagram](class_diagram.png)
 
 
 [2810]: https://tools.ietf.org/html/rfc2810

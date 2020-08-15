@@ -387,7 +387,7 @@ class IRCException(Exception):
 
     @classmethod
     def format(cls, *args):
-        return "{code} {error}".format(
+        return ": {code} {error}".format(
             code=cls.code,
             error=cls.msg % args,
         )

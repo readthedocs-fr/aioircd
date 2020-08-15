@@ -127,9 +127,15 @@ class Channel:
         self.local.channels[name] = self.local.channels.pop(self._name, self)
         self._name = name
 
+    def __str__(self):
+        return self.name
+
     async def send_all(self, msg):
+        if not self.users:
+            return
         for user in self.users:
             user.writer.write(f"{msg}\r\n".encode())
+        logger.msg("%s > %s", self, msg)
         await asyncio.wait([user.writer.drain() for user in self.users])
 
     async def send_all_except(self, msg, skip_user):
@@ -139,6 +145,7 @@ class Channel:
             if user.nick == skip_user:
                 continue
             user.writer.write(f"{msg}\r\n".encode())
+        logger.msg("%s > %s", self, msg)
         await asyncio.wait([user.writer.drain() for user in self.users])
 
 
@@ -149,6 +156,8 @@ class User:
         self.writer = writer
         self.state = UserConnectedState(self)
         self._nick = None
+
+        self.channels = []
 
     @property
     def nick(self):
@@ -166,7 +175,7 @@ class User:
 
     async def serve(self):
         buffer = b""
-        while True:
+        while type(self.state) != UserQuitState:
             try:
                 chunk = await self.reader.read(1024)
             except ConnectionResetError:
@@ -188,7 +197,7 @@ class User:
                     try:
                         await func(args)
                     except IRCException as exc:
-                        logger.warning("%s sent an invalid command: %s", self, exc.args[0])
+                        logger.warning("%s sent an invalid command.", self)
                         await self.send(exc.args[0])
                 else:
                     logger.warning("%s sent an unknown command: %s", self, cmd)
@@ -198,6 +207,7 @@ class User:
 
     async def send(self, msg):
         self.writer.write(f"{msg}\r\n".encode())
+        logger.msg("%s > %s", self, msg)
         await self.writer.drain()
 
 
@@ -237,6 +247,10 @@ class UserMetaState(metaclass=ABCMeta):
     async def PRIVMSG(self, args):
         pass
 
+    @command
+    async def QUIT(self, args):
+        self.state = UserQuitState(self._user)
+
 
 class UserConnectedState(UserMetaState):
     """
@@ -261,14 +275,10 @@ class UserConnectedState(UserMetaState):
 
     @command
     async def JOIN(self, args):
-        # illegal
-
         raise ErrNoLogin()
 
     @command
     async def PRIVMSG(self, args):
-        # illegal
-
         raise ErrNoLogin()
 
 
@@ -304,6 +314,7 @@ class UserRegisteredState(UserMetaState):
             if not chann:
                 chann = Channel(channel, self.local)
             chann.users.append(self._user)
+            self.channels.append(chann)
 
             await chann.send_all(f":{self.nick} JOIN {channel}")
 
@@ -334,6 +345,40 @@ class UserRegisteredState(UserMetaState):
             if not receiver:
                 raise ErrErroneusNickname(user)
             await receiver.send(f":{self.nick} PRIVMSG {user} {msg}")
+
+    @command
+    async def QUIT(self, args):
+        msg = " ".join(args) if args else ":Disconnected"
+        for channel in self.channels:
+            channel.users.remove(self._user)
+            await channel.send_all(f":{self.nick} QUIT {msg}")
+        self.state = UserQuitState(self._user)
+
+
+class UserQuitState(UserMetaState):
+    """
+    User sent QUIT command
+    """
+
+    @command
+    async def PONG(self, args):
+        pass
+
+    @command
+    async def NICK(self, args):
+        pass
+
+    @command
+    async def JOIN(self, args):
+        pass
+
+    @command
+    async def PRIVMSG(self, args):
+        pass
+
+    @command
+    async def QUIT(self, args):
+        pass
 
 
 class IRCException(Exception):

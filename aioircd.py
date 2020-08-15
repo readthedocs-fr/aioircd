@@ -97,7 +97,8 @@ class ServerLocal:
 
 
 class Channel:
-    def __init__(self, name):
+    def __init__(self, name, local):
+        self.local = local
         self._name = None
         self.name = name
         self.users = []
@@ -149,12 +150,12 @@ class User:
                 raise MemoryError("Message exceed 1024 bytes")
 
             for line in lines:
+                logger.msg("%s < %s", self, line)
                 cmd, *args = line.decode().split()
                 func = getattr(self.state, cmd, None)
                 if getattr(func, 'command', False):
-                    logger.msg("%s < %s %s", self, line.decode())
                     try:
-                        await func(*args)
+                        await func(args)
                     except IRCException as exc:
                         logger.warning("%s sent an invalid command: %s", self, exc.args[0])
                         await self.send(exc.args[0])
@@ -175,7 +176,7 @@ def command(func):
 
 class UserMetaState(metaclass=ABCMeta):
     def __init__(self, user):
-        self._user = user
+        object.__setattr__(self, "_user", user)
 
     def __getattr__(self, attr):
         return getattr(self._user, attr)
@@ -225,7 +226,7 @@ class UserConnectedState(UserMetaState):
         if not nick_re.match(nick):
             raise ErrErroneusNickname(nick)
         self.nick = nick
-        self.state = UserRegisteredState(self._client)
+        self.state = UserRegisteredState(self._user)
 
     @command
     async def JOIN(self, args):
@@ -270,7 +271,7 @@ class UserRegisteredState(UserMetaState):
 
             chann = self.local.channels.get(channel)
             if not chann:
-                chann = Channel(channel)
+                chann = Channel(channel, self.local)
             chann.users.append(self._user)
 
             nicks = " ".join(user.nick for user in chann.users)

@@ -151,7 +151,14 @@ class User:
 
     async def serve(self):
         buffer = b""
-        while chunk := await self.reader.read(1024):
+        while True:
+            try:
+                chunk = await self.reader.read(1024)
+            except ConnectionResetError:
+                break
+            if not chunk:
+                break
+
             buffer += chunk
             *lines, buffer = buffer.split(b'\r\n')
 

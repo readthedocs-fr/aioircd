@@ -30,9 +30,10 @@ def main():
     logging.root.handlers.clear()
     logging.root.addHandler(stdout)
     logging.root.setLevel(verbosity)
-    logging.addLevelName(logging.INFO, 'MSG')
-    logging.msg = functools.partial(logging.log, 'MSG')
-    logger.msg = functools.partial(logger.log, 'MSG')
+    logging.MSG = logging.INFO + 1
+    logging.addLevelName(logging.MSG, 'MSG')
+    logging.msg = functools.partial(logging.log, logging.MSG)
+    logger.msg = functools.partial(logger.log, logging.MSG)
 
     if verbosity == 0:
         logging.captureWarnings(True)

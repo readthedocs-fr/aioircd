@@ -115,7 +115,16 @@ class Channel:
     async def send_all(self, msg):
         for user in self.users:
             user.writer.write(f"{msg}\r\n".encode())
-        await asyncio.gather([user.writer.drain() for user in self.users])
+        await asyncio.wait([user.writer.drain() for user in self.users])
+
+    async def send_all_except(self, msg, skip_user):
+        for user in self.users:
+            if user is skip_user:
+                continue
+            if user.nick == skip_user:
+                continue
+            user.writer.write(f"{msg}\r\n".encode())
+        await asyncio.wait([user.writer.drain() for user in self.users])
 
 
 class User:
@@ -274,15 +283,14 @@ class UserRegisteredState(UserMetaState):
                 chann = Channel(channel, self.local)
             chann.users.append(self._user)
 
-            nicks = " ".join(user.nick for user in chann.users)
-            maxwidth = 1024 - len("353  :\r\n") - len(channel)
-
-            for line in textwrap.wrap(nicks, width=maxwidth):
-                await self.send(f"353 {channel} :{line}")
-
-            await self.send(f"366 {channel} :End of NAMES list")
-
             await chann.send_all(f":{self.nick} JOIN {channel}")
+
+            nicks = " ".join(user.nick for user in chann.users)
+            prefix = f": 353 {self.nick} = {channel} :"
+            maxwidth = 1024 - len(prefix) - 2  # -2 is \r\n
+            for line in textwrap.wrap(nicks, width=maxwidth):
+                await self.send(prefix + line)
+            await self.send(f": 366 {self.nick} {channel} :End of /NAMES list.")
 
     @command
     async def PRIVMSG(self, args):
@@ -298,7 +306,7 @@ class UserRegisteredState(UserMetaState):
             chann = self.local.channels.get(user)
             if not chann:
                 raise ErrNoSuchChannel(user)
-            await chann.send_all(f":{self.nick} PRIVMSG {user} {msg}")
+            await chann.send_all_except(f":{self.nick} PRIVMSG {user} {msg}", self._user)
         else:
             receiver = self.local.users.get(user)
             if not receiver:

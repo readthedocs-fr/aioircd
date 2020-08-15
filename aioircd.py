@@ -428,3 +428,7 @@ class ErrNoTextToSend(IRCException):
 class ErrUnknownCommand(IRCException):
     msg = "%s :Unknown command"
     code = "421"
+
+
+if __name__ == "__main__":
+    main()

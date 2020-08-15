@@ -4,9 +4,10 @@ import argparse
 import asyncio
 import functools
 import logging
+import os
 import re
-import warnings
 import textwrap
+import warnings
 from abc import ABCMeta, abstractmethod
 
 nick_re = re.compile(r"[a-zA-Z][a-zA-Z0-9\-_]{0,8}")
@@ -22,19 +23,33 @@ def main():
     cli.add_argument('-s', '--silent', action='count', default=0)
     options = cli.parse_args()
 
-    verbosity = 10 * max(0, min(3 - options.verbose + options.silent, 5))
-    stdout = logging.StreamHandler()
-    stdout.formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] <%(funcName)s> %(message)s"
-    )
-    logging.root.handlers.clear()
-    logging.root.addHandler(stdout)
-    logging.root.setLevel(verbosity)
     logging.MSG = logging.INFO + 1
     logging.addLevelName(logging.MSG, 'MSG')
     logging.msg = functools.partial(logging.log, logging.MSG)
     logger.msg = functools.partial(logger.log, logging.MSG)
 
+    class ColoredFormatter(logging.Formatter):
+        def format(self, record):
+            fg, bg = {
+                logging.DEBUG: (34, 49),
+                logging.INFO: (32, 49),
+                logging.MSG: (37, 49),
+                logging.WARNING: (33, 49),
+                logging.ERROR: (31, 49),
+                logging.CRITICAL: (37, 41),
+            }.get(record.levelno, (32, 49))
+            record.levelname = f"\033[1;{fg}m\033[1;{bg}m{record.levelname}\033[0m"
+            return super().format(record)
+
+
+    verbosity = 10 * max(0, min(3 - options.verbose + options.silent, 5))
+    stdout = logging.StreamHandler()
+    stdout.formatter = (ColoredFormatter if os.name != 'nt' else logging.Formatter)(
+        "%(asctime)s [%(levelname)s] <%(funcName)s> %(message)s"
+    )
+    logging.root.handlers.clear()
+    logging.root.addHandler(stdout)
+    logging.root.setLevel(verbosity)
     if verbosity == 0:
         logging.captureWarnings(True)
         warnings.filterwarnings('default')

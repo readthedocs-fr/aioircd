@@ -4,10 +4,12 @@
 
 import argparse
 import asyncio
+import contextlib
 import functools
 import logging
 import os
 import re
+import signal
 import textwrap
 import warnings
 from abc import ABCMeta, abstractmethod
@@ -35,15 +37,12 @@ def main():
     # Color the [LEVEL] part of messages, need new terminal on Windows
     # https://github.com/odoo/odoo/blob/13.0/odoo/netsvc.py#L57-L100
     class ColoredFormatter(logging.Formatter):
+        colors = {
+            10: (34, 49), 20: (32, 49), 21: (37, 49),
+            30: (33, 49), 40: (31, 49), 50: (37, 41),
+        }
         def format(self, record):
-            fg, bg = {
-                logging.DEBUG: (34, 49),
-                logging.INFO: (32, 49),
-                logging.MSG: (37, 49),
-                logging.WARNING: (33, 49),
-                logging.ERROR: (31, 49),
-                logging.CRITICAL: (37, 41),
-            }.get(record.levelno, (32, 49))
+            fg, bg = type(self).colors.get(record.levelno, (32, 49))
             record.levelname = f"\033[1;{fg}m\033[1;{bg}m{record.levelname}\033[0m"
             return super().format(record)
 
@@ -64,16 +63,20 @@ def main():
 
     # Start the server on foreground, gracefully quit on the first SIGINT
     server = Server(options.host, options.port)
+
+    @functools.partial(signal.signal, signal.SIGINT)
+    def stop(*_):
+        if server.is_serving():
+            print("Press ctrl-c again to force exit")
+            server.close()
+        else:
+            raise KeyboardInterrupt
+
     try:
-        asyncio.run(server.serve())
-    except Exception:
-        logger.critical("Fatal error in event loop !", exc_info=True)
-    except KeyboardInterrupt:
-        print("Press ctrl-c again to force exit")
-        try:
-            asyncio.run(server.quit())
-        except KeyboardInterrupt:
-            raise SystemExit(1)
+        asyncio.run(server.serve_forever())
+    except Exception as exc:
+        logger.critical("Fatal error in server loop !", exc_info=True)
+        raise SystemExit(1)
 
 
 class Server:
@@ -88,18 +91,23 @@ class Server:
         self._serv = await asyncio.start_server(self.handle, self.host, self.port)
 
         logger.info("Listening on %s port %i", self.host, self.port)
-        async with self._serv:
-            await self._serv.serve_forever()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._serv.serve_forever()  # until _serv.close() is called
 
-    async def quit(self):
         logger.info("Terminating all connections...")
-        self._serv.close()
         for client in self._serv.sockets:
             client.write_eof()
-        for client in self._serv.sockets:
-            await client.wait_closed()
+        coros = [client.wait_closed() for client in self._serv.sockets]
+        if coros:
+            await asyncio.wait(coros)
         await self._serv.wait_closed()
-        raise SystemExit(0)
+
+    def close(self):
+        if self.is_serving():
+            self._serv.close()
+
+    def is_serving(self):
+        return self._serv and self._serv.is_serving()
 
     async def handle(self, reader, writer):
         """ Create a new User and serve him until he disconnects or we kick him """
@@ -143,23 +151,22 @@ class Channel:
     def __str__(self):
         return self.name
 
-    async def send_all(self, msg):
-        if not self.users:
-            return
-        for user in self.users:
+    async def send(self, users, msg):
+        logger.log(IOLevel, "%s > %s", self, msg)
+        for user in users:
             user.writer.write(f"{msg}\r\n".encode())
-        logger.msg("%s > %s", self, msg)
-        await asyncio.wait([user.writer.drain() for user in self.users])
+        coros = [user.writer.drain() for user in users]
+        if coros:
+            await asyncio.wait(coros)
+
+    async def send_all(self, msg):
+        """ Send a message to every user present in the channel """
+        await self.send(self.users, msg)
 
     async def send_all_except(self, msg, skip_user):
-        for user in self.users:
-            if user is skip_user:
-                continue
-            if user.nick == skip_user:
-                continue
-            user.writer.write(f"{msg}\r\n".encode())
-        logger.msg("%s > %s", self, msg)
-        await asyncio.wait([user.writer.drain() for user in self.users])
+        """ Send a message to every user present in the channel except ``skip_user`` """
+        skip_func = lambda user: user is not skip_user and user.nick != skip_user
+        await self.send(filter(skip_func, self.users), msg)
 
 
 class User:
@@ -196,9 +203,11 @@ class User:
             try:
                 chunk = await self.reader.read(1024)
             except ConnectionResetError:
-                break
+                self.state.QUIT(":Connection reset by peer".split())
+                return  # Force disconnection
             if not chunk:
-                break
+                self.state.QUIT(":EOF received".split())
+                break  # Graceful disconnection
 
             # imagine two messages of 768 bytes are sent together, read(1024)
             # only read the first one and the 256 first bytes of the second,

@@ -464,7 +464,7 @@ class ErrNicknameInUse(IRCException):
     code = "433"
 
 class ErrNoLogin(IRCException):
-    mdg = ":User not logged in"
+    msg = ":User not logged in"
     code = "444"
 
 class ErrNeedMoreParams(IRCException):

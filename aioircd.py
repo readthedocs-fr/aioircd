@@ -121,11 +121,18 @@ class ServerLocal:
 
 
 class Channel:
+    count = 0
+
     def __init__(self, name, local):
         self.local = local
         self._name = None
         self.name = name
-        self.users = []
+        self.users = set()
+        self.gid = type(self).count
+        type(self).count += 1
+
+    def __hash__(self):
+        return self.gid
 
     @property
     def name(self):
@@ -158,13 +165,20 @@ class Channel:
 
 
 class User:
+    count = 0
+
     def __init__(self, local, reader, writer):
         self.local = local
         self.reader = reader
         self.writer = writer
         self.state = UserConnectedState(self)
         self._nick = None
-        self.channels = []
+        self.channels = set()
+        self.uid = type(self).count
+        type(self).count += 1
+
+    def __hash__(self):
+        return self.uid
 
     @property
     def nick(self):
@@ -353,14 +367,17 @@ class UserRegisteredState(UserMetaState):
             if not chann_re.match(channel):
                 await self.send(ErrNoSuchChannel.format(channel))
 
+            # Find or create the channel, add the user in it
             chann = self.local.channels.get(channel)
             if not chann:
                 chann = Channel(channel, self.local)
-            chann.users.append(self._user)
-            self.channels.append(chann)
+            chann.users.add(self._user)
+            self.channels.add(chann)
 
+            # Send JOIN response to all
             await chann.send_all(f":{self.nick} JOIN {channel}")
 
+            # Send NAMES list to joiner
             nicks = " ".join(user.nick for user in chann.users)
             prefix = f": 353 {self.nick} = {channel} :"
             maxwidth = 1024 - len(prefix) - 2  # -2 is \r\n
@@ -379,11 +396,13 @@ class UserRegisteredState(UserMetaState):
             raise ErrNoTextToSend()
 
         if user.startswith("#"):
+            # Relai channel message to all
             chann = self.local.channels.get(user)
             if not chann:
                 raise ErrNoSuchChannel(user)
             await chann.send_all_except(f":{self.nick} PRIVMSG {user} {msg}", self._user)
         else:
+            # Relai private message to user
             receiver = self.local.users.get(user)
             if not receiver:
                 raise ErrErroneusNickname(user)

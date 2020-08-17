@@ -7,7 +7,6 @@ import asyncio
 import contextlib
 import functools
 import logging
-import os
 import re
 import signal
 import textwrap
@@ -63,18 +62,12 @@ def main():
 
     # Start the server on foreground, gracefully quit on the first SIGINT
     server = Server(options.host, options.port)
-
-    @functools.partial(signal.signal, signal.SIGINT)
-    def stop(*_):
-        if server.is_serving():
-            print("Press ctrl-c again to force exit")
-            server.close()
-        else:
-            raise KeyboardInterrupt
-
     try:
         asyncio.run(server.serve_forever())
-    except Exception as exc:
+    except KeyboardInterrupt:
+        print("Press ctrl-c again to force exit.")
+        asyncio.run(server.quit())
+    except Exception:
         logger.critical("Fatal error in server loop !", exc_info=True)
         raise SystemExit(1)
 
@@ -91,23 +84,18 @@ class Server:
         self._serv = await asyncio.start_server(self.handle, self.host, self.port)
 
         logger.info("Listening on %s port %i", self.host, self.port)
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._serv.serve_forever()  # until _serv.close() is called
+        await self._serv.serve_forever()
 
+    async def quit(self):
         logger.info("Terminating all connections...")
-        for client in self._serv.sockets:
-            client.write_eof()
-        coros = [client.wait_closed() for client in self._serv.sockets]
+        coros = []
+        for user in self.local.users.values():
+            user.writer.write_eof()
+            coros.append(user.writer.wait_closed())
         if coros:
             await asyncio.wait(coros)
+        self._serv.close()
         await self._serv.wait_closed()
-
-    def close(self):
-        if self.is_serving():
-            self._serv.close()
-
-    def is_serving(self):
-        return self._serv and self._serv.is_serving()
 
     async def handle(self, reader, writer):
         """ Create a new User and serve him until he disconnects or we kick him """
@@ -203,10 +191,10 @@ class User:
             try:
                 chunk = await self.reader.read(1024)
             except ConnectionResetError:
-                self.state.QUIT(":Connection reset by peer".split())
+                await self.state.QUIT(":Connection reset by peer".split())
                 return  # Force disconnection
             if not chunk:
-                self.state.QUIT(":EOF received".split())
+                await self.state.QUIT(":EOF received".split())
                 break  # Graceful disconnection
 
             # imagine two messages of 768 bytes are sent together, read(1024)

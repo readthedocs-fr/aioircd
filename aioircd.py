@@ -4,11 +4,8 @@
 
 import argparse
 import asyncio
-import contextlib
-import functools
 import logging
 import re
-import signal
 import textwrap
 import warnings
 from abc import ABCMeta, abstractmethod
@@ -145,23 +142,18 @@ class Channel:
     def __str__(self):
         return self.name
 
-    async def send(self, users, msg):
+    async def send(self, msg, skip=None):
         logger.log(IOLevel, "%s > %s", self, msg)
+        users = self.users if not skip else (
+            user for user in self.users
+            if user not in skip and user.nick not in skip
+        )
         coros = []
         for user in users:
             user.writer.write(f"{msg}\r\n".encode())
             coros.append(user.writer.drain())
         if coros:
             await asyncio.wait(coros)
-
-    async def send_all(self, msg):
-        """ Send a message to every user present in the channel """
-        await self.send(self.users, msg)
-
-    async def send_all_except(self, msg, skip_user):
-        """ Send a message to every user present in the channel except ``skip_user`` """
-        skip_func = lambda user: user is not skip_user and user.nick != skip_user
-        await self.send(filter(skip_func, self.users), msg)
 
 
 class User:
@@ -261,21 +253,8 @@ class UserMetaState(metaclass=ABCMeta):
     commands have different meaning in every of those states.
     """
 
-    # The State instances implement a proxy to their user. You may use
-    # any User attribute or method as they were directly defined on the
-    # state. Beware to use ``self._user`` when transitionning between
-    # states.
-
     def __init__(self, user):
-        object.__setattr__(self, "_user", user)
-
-    def __getattr__(self, attr):
-        return getattr(self._user, attr)
-
-    def __setattr__(self, attr, value):
-        if hasattr(self._user, attr):
-            return setattr(self._user, attr, value)
-        super().__setattr__(attr, value)
+        self.user = user
 
     @command
     @abstractmethod
@@ -300,13 +279,13 @@ class UserMetaState(metaclass=ABCMeta):
     @command
     async def QUIT(self, args):
         msg = " ".join(args) if args else ":Disconnected"
-        for channel in self.channels:
-            channel.users.remove(self._user)
-            await channel.send_all(f":{self.nick} QUIT {msg}")
+        for channel in self.user.channels:
+            channel.users.remove(self.user)
+            await channel.send(f":{self.user.nick} QUIT {msg}")
             if not channel.users:
-                self.local.channels.pop(channel.name)
-        self.channels.clear()
-        self.state = UserQuitState(self._user)
+                self.user.local.channels.pop(channel.name)
+        self.user.channels.clear()
+        self.user.state = UserQuitState(self.user)
 
 
 class UserConnectedState(UserMetaState):
@@ -324,12 +303,12 @@ class UserConnectedState(UserMetaState):
         if not args:
             raise ErrNoNicknameGiven()
         nick = args[0]
-        if nick in self.local.users:
+        if nick in self.user.local.users:
             raise ErrNicknameInUse(nick)
         if not nick_re.match(nick):
             raise ErrErroneusNickname(nick)
-        self.nick = nick
-        self.state = UserRegisteredState(self._user)
+        self.user.nick = nick
+        self.user.state = UserRegisteredState(self.user)
 
     @command
     async def JOIN(self, args):
@@ -355,11 +334,11 @@ class UserRegisteredState(UserMetaState):
         if not args:
             raise ErrNoNicknameGiven()
         nick = args[0]
-        if nick in self.local.users:
+        if nick in self.user.local.users:
             raise ErrNicknameInUse(nick)
         if not nick_re.match(nick):
             raise ErrErroneusNickname(nick)
-        self.nick = nick
+        self.user.nick = nick
 
     @command
     async def JOIN(self, args):
@@ -367,48 +346,48 @@ class UserRegisteredState(UserMetaState):
             raise ErrNeedMoreParams("JOIN")
         for channel in args:
             if not chann_re.match(channel):
-                await self.send(ErrNoSuchChannel.format(channel))
+                await self.user.send(ErrNoSuchChannel.format(channel))
 
             # Find or create the channel, add the user in it
-            chann = self.local.channels.get(channel)
+            chann = self.user.local.channels.get(channel)
             if not chann:
-                chann = Channel(channel, self.local)
-            chann.users.add(self._user)
-            self.channels.add(chann)
+                chann = Channel(channel, self.user.local)
+            chann.users.add(self.user)
+            self.user.channels.add(chann)
 
             # Send JOIN response to all
-            await chann.send_all(f":{self.nick} JOIN {channel}")
+            await chann.send(f":{self.user.nick} JOIN {channel}")
 
             # Send NAMES list to joiner
             nicks = " ".join(user.nick for user in chann.users)
-            prefix = f": 353 {self.nick} = {channel} :"
+            prefix = f": 353 {self.user.nick} = {channel} :"
             maxwidth = 1024 - len(prefix) - 2  # -2 is \r\n
             for line in textwrap.wrap(nicks, width=maxwidth):
-                await self.send(prefix + line)
-            await self.send(f": 366 {self.nick} {channel} :End of /NAMES list.")
+                await self.user.send(prefix + line)
+            await self.user.send(f": 366 {self.user.nick} {channel} :End of /NAMES list.")
 
     @command
     async def PRIVMSG(self, args):
         if not args or args[0] == "":
             raise ErrNoRecipient("PRIVMSG")
 
-        user = args[0]
+        dest = args[0]
         msg = " ".join(args[1:])
         if not msg or not msg.startswith(":") or len(msg) < 2:
             raise ErrNoTextToSend()
 
-        if user.startswith("#"):
+        if dest.startswith("#"):
             # Relai channel message to all
-            chann = self.local.channels.get(user)
+            chann = self.user.local.channels.get(dest)
             if not chann:
-                raise ErrNoSuchChannel(user)
-            await chann.send_all_except(f":{self.nick} PRIVMSG {user} {msg}", self._user)
+                raise ErrNoSuchChannel(dest)
+            await chann.send(f":{self.user.nick} PRIVMSG {dest} {msg}", skip={self.user})
         else:
             # Relai private message to user
-            receiver = self.local.users.get(user)
+            receiver = self.user.local.users.get(dest)
             if not receiver:
-                raise ErrErroneusNickname(user)
-            await receiver.send(f":{self.nick} PRIVMSG {user} {msg}")
+                raise ErrErroneusNickname(dest)
+            await receiver.send(f":{self.user.nick} PRIVMSG {dest} {msg}")
 
 
 class UserQuitState(UserMetaState):

@@ -303,6 +303,8 @@ class UserMetaState(metaclass=ABCMeta):
         for channel in self.channels:
             channel.users.remove(self._user)
             await channel.send_all(f":{self.nick} QUIT {msg}")
+            if not channel.users:
+                self.local.channels.pop(channel.name)
         self.channels.clear()
         self.state = UserQuitState(self._user)
 

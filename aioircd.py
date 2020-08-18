@@ -106,10 +106,9 @@ class Server:
             await user.serve()
         except Exception:
             logger.exception("Error in client loop !")
-        finally:
-            writer.close()
-            await writer.wait_closed()
         self.local.users.pop(user.nick, None)
+        writer.close()
+        await writer.wait_closed()
         logger.info("Connection with %s closed", peeraddr)
 
 

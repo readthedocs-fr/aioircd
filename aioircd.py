@@ -147,9 +147,10 @@ class Channel:
 
     async def send(self, users, msg):
         logger.log(IOLevel, "%s > %s", self, msg)
+        coros = []
         for user in users:
             user.writer.write(f"{msg}\r\n".encode())
-        coros = [user.writer.drain() for user in users]
+            coros.append(user.writer.drain())
         if coros:
             await asyncio.wait(coros)
 

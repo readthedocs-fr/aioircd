@@ -121,8 +121,7 @@ class Channel:
 
     def __init__(self, name, local):
         self.local = local
-        self._name = None
-        self.name = name
+        self._name = name
         self.users = set()
         self.gid = type(self).count
         type(self).count += 1
@@ -133,11 +132,6 @@ class Channel:
     @property
     def name(self):
         return self._name
-
-    @name.setter
-    def name(self, name):
-        self.local.channels[name] = self.local.channels.pop(self._name, self)
-        self._name = name
 
     def __str__(self):
         return self.name
@@ -352,6 +346,7 @@ class UserRegisteredState(UserMetaState):
             chann = self.user.local.channels.get(channel)
             if not chann:
                 chann = Channel(channel, self.user.local)
+                self.user.local.channels[chann.name] = chann
             chann.users.add(self.user)
             self.user.channels.add(chann)
 

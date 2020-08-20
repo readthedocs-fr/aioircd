@@ -138,16 +138,13 @@ class Channel:
 
     async def send(self, msg, skip=None):
         logger.log(IOLevel, "%s > %s", self, msg)
-        users = self.users if not skip else (
-            user for user in self.users
-            if user not in skip and user.nick not in skip
-        )
-        coros = []
-        for user in users:
-            user.writer.write(f"{msg}\r\n".encode())
-            coros.append(user.writer.drain())
-        if coros:
-            await asyncio.wait(coros)
+        send_coros = [
+            user.send(msg, log=False)
+            for user in self.users
+            if skip is None or user not in skip
+        ]
+        if send_coros:
+            await asyncio.wait(send_coros)
 
 
 class User:
@@ -229,17 +226,19 @@ class User:
             else:
                 logger.warning("%s sent an unknown command: %s", self, cmd)
 
-    async def send(self, msg: str):
+    def send(self, msg: str, log=True):
         """ Send a message to the user """
+        if log:
+            logger.log(IOLevel, "%s > %s", self, msg)
         self.writer.write(f"{msg}\r\n".encode())
-        logger.log(IOLevel, "%s > %s", self, msg)
-        await self.writer.drain()
+        return self.writer.drain()  # coroutine
 
 
 def command(func):
     """ Denote the function is triggered by an IRC message """
     func.command = True
     return func
+
 
 class UserMetaState(metaclass=ABCMeta):
     """

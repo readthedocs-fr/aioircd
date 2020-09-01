@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import re
+import signal
 import textwrap
 import warnings
 from abc import ABCMeta, abstractmethod
@@ -59,11 +60,15 @@ def main():
 
     # Start the server on foreground, gracefully quit on the first SIGINT
     server = Server(options.host, options.port)
+    loop = asyncio.new_event_loop()
+    loop.create_task(server.serve())
     try:
-        asyncio.run(server.serve_forever())
+        loop.run_forever()
     except KeyboardInterrupt:
         print("Press ctrl-c again to force exit.")
-        asyncio.run(server.quit())
+        loop.run_until_complete(server.quit())
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
     except Exception:
         logger.critical("Fatal error in server loop !", exc_info=True)
         raise SystemExit(1)
@@ -76,12 +81,10 @@ class Server:
         self.local = ServerLocal()
         self._serv = None
 
-    async def serve_forever(self):
+    async def serve(self):
         """ Start listening for new connections """
         self._serv = await asyncio.start_server(self.handle, self.host, self.port)
-
         logger.info("Listening on %s port %i", self.host, self.port)
-        await self._serv.serve_forever()
 
     async def quit(self):
         logger.info("Terminating all connections...")

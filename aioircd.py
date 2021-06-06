@@ -13,6 +13,21 @@ from abc import ABCMeta, abstractmethod
 
 nick_re = re.compile(r"[a-zA-Z][a-zA-Z0-9\-_]{0,8}")
 chann_re = re.compile(r"#[a-zA-Z0-9\-_]{1,49}")
+unsafe_nicks = [
+    # RFC
+    'anonymous',
+    # anope services
+    'ChanServ',
+    'NickServ',
+    'OperServ',
+    'MemoServ',
+    'HostServ',
+    'BotServ',
+]
+safe_addrs = [
+    '::1',
+    '127.0.0.1',  # I know it should be a /8 but flem
+]
 
 IOLevel = logging.INFO + 1
 logging.addLevelName(IOLevel, 'IO')
@@ -305,6 +320,9 @@ class UserConnectedState(UserMetaState):
             raise ErrNicknameInUse(nick)
         if not nick_re.match(nick):
             raise ErrErroneusNickname(nick)
+        if nick in unsafe_nicks and self.user.ip not in safe_addrs:
+            raise ErrErroneusNickname(nick)
+
         self.user.nick = nick
         self.user.state = UserRegisteredState(self.user)
 

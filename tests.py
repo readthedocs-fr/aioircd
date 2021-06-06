@@ -160,7 +160,7 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
         await zoe_write.drain()
         await zoe_read.wait_closed()
         await asyncio.wait_for(zoe_task, 1)
-        self.assertIsInstance(zoe.state, aioircd.UserQuitState, "Zoe quit")
+        self.assertIsInstance(zoe.state, aioircd.StateQuit, "Zoe quit")
 
         self.assertEqual(set(server.local.users), {'Joe', 'Leo'}, "There should be two registered users.")
         self.assertEqual(set(server.local.channels), {'#aioircd'}, "There should be one channel.")

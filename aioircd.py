@@ -203,7 +203,7 @@ class User:
         connection is reset.
         """
         buffer = b""
-        while type(self.state) != UserQuitState:
+        while type(self.state) != StateQuit:
             try:
                 chunk = await self.reader.read(1024)
             except ConnectionResetError:
@@ -254,39 +254,40 @@ class User:
 
 
 def command(func):
-    """ Denote the function is triggered by an IRC message """
+    """ Denote the function can be triggered by an IRC message """
     func.command = True
     return func
 
 
-class UserMetaState(metaclass=ABCMeta):
+class UserState():
     """
     IRC State Machine, user starts Connected then Registed then Quit,
     commands have different meaning in every of those states.
     """
 
     def __init__(self, user):
+        logger.debug("state of user %s changed: %s -> %s", user, user.state, self)
         self.user = user
 
     @command
-    @abstractmethod
     async def PONG(self, args):
         pass
 
     @command
-    @abstractmethod
+    async def PASS(self, args):
+        logger.debug("pass called by %s while in wrong state.", self.user)
+
+    @command
     async def NICK(self, args):
-        pass
+        logger.debug("nick called by %s while in wrong state.", self.user)
 
     @command
-    @abstractmethod
     async def JOIN(self, args):
-        pass
+        logger.debug("join called by %s while in wrong state.", self.user)
 
     @command
-    @abstractmethod
     async def PRIVMSG(self, args):
-        pass
+        logger.debug("privmsg called by %s while in wrong state.", self.user)
 
     @command
     async def QUIT(self, args):
@@ -297,10 +298,13 @@ class UserMetaState(metaclass=ABCMeta):
             if not channel.users:
                 self.user.local.channels.pop(channel.name)
         self.user.channels.clear()
-        self.user.state = UserQuitState(self.user)
+        self.user.state = StateQuit(self.user)
+
+    def __str__(self):
+        return type(self).__name__[4:-5]
 
 
-class UserConnectedState(UserMetaState):
+class StateConnected(UserState):
     """
     The user is just connected, he must register via the NICK command
     first before going on.
@@ -323,18 +327,14 @@ class UserConnectedState(UserMetaState):
             raise ErrErroneusNickname(nick)
 
         self.user.nick = nick
-        self.user.state = UserRegisteredState(self.user)
-
-    @command
-    async def JOIN(self, args):
-        raise ErrNoLogin()
+        self.user.state = StateRegistered(self.user)
 
     @command
     async def PRIVMSG(self, args):
         raise ErrNoLogin()
 
 
-class UserRegisteredState(UserMetaState):
+class StateRegistered(UserState):
     """
     The user sent the NICK command, he is fully registered to the server
     and may use any command.
@@ -406,30 +406,8 @@ class UserRegisteredState(UserMetaState):
             await receiver.send(f":{self.user.nick} PRIVMSG {dest} {msg}")
 
 
-class UserQuitState(UserMetaState):
-    """
-    The user sent the QUIT command, no more message should be processed
-    """
-
-    @command
-    async def PONG(self, args):
-        pass
-
-    @command
-    async def NICK(self, args):
-        pass
-
-    @command
-    async def JOIN(self, args):
-        pass
-
-    @command
-    async def PRIVMSG(self, args):
-        pass
-
-    @command
-    async def QUIT(self, args):
-        pass
+class StateQuit(UserState):
+    """ The user sent the QUIT command, no more message should be processed """
 
 
 class IRCException(Exception):

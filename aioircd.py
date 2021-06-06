@@ -11,6 +11,10 @@ import textwrap
 import warnings
 from abc import ABCMeta, abstractmethod
 
+ROOT = __file__.rpartition('/')[0]
+with open(f'{ROOT}/VERSION') as fd:
+    VERSION = fd.read().strip()
+
 nick_re = re.compile(r"[a-zA-Z][a-zA-Z0-9\-_]{0,8}")
 chann_re = re.compile(r"#[a-zA-Z0-9\-_]{1,49}")
 unsafe_nicks = [
@@ -347,9 +351,12 @@ class StateConnected(UserState):
         self.user.nick = nick
         self.user.state = StateRegistered(self.user)
 
-    @command
-    async def PRIVMSG(self, args):
-        raise ErrNoLogin()
+        await self.user.send(f": 001 Welcome {self.user.nick} !")
+        await self.user.send(": 002 Your host is me")
+        await self.user.send(": 003 The server was created at some point")
+        await self.user.send(f": 004 {__name__} {VERSION}  ")
+        #                                                 ^ available channel modes
+        #                                                ^ available user modes
 
 
 class StateRegistered(UserState):
@@ -393,7 +400,7 @@ class StateRegistered(UserState):
             await chann.send(f":{self.user.nick} JOIN {channel}")
 
             # Send NAMES list to joiner
-            nicks = " ".join(user.nick for user in chann.users)
+            nicks = " ".join(sorted(user.nick for user in chann.users))
             prefix = f": 353 {self.user.nick} = {channel} :"
             maxwidth = 1024 - len(prefix) - 2  # -2 is \r\n
             for line in textwrap.wrap(nicks, width=maxwidth):

@@ -200,10 +200,12 @@ class User:
         self.local.users[nick] = self.local.users.pop(self._nick, self)
         self._nick = nick
 
-    def __str__(self):
-        if self.nick:
-            return self.nick
+    @property
+    def addr(self):
         return self.writer.get_extra_info('peername')[0]
+
+    def __str__(self):
+        return self.nick or self.addr
 
     async def read_lines(self):
         """

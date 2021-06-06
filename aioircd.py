@@ -58,20 +58,23 @@ def main():
         logging.captureWarnings(True)
         warnings.filterwarnings('default')
 
-    # Start the server on foreground, gracefully quit on the first SIGINT
+    # Start the server on foreground, gracefully quit on the first SIGTERM/SIGINT
+    asyncio.set_event_loop(loop := asyncio.new_event_loop())
+    sigterm = asyncio.Event()
+    loop.add_signal_handler(signal.SIGTERM, sigterm.set)
+
     server = Server(options.host, options.port)
-    loop = asyncio.new_event_loop()
     loop.create_task(server.serve())
     try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        print("Press ctrl-c again to force exit.")
-        loop.run_until_complete(server.quit())
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
+        loop.run_until_complete(sigterm.wait())
     except Exception:
         logger.critical("Fatal error in server loop !", exc_info=True)
-        raise SystemExit(1)
+    except KeyboardInterrupt:
+        pass
+    loop.run_until_complete(server.shutdown())
+    loop.run_until_complete(loop.shutdown_asyncgens())
+    loop.close()
+    logging.shutdown()
 
 
 class Server:
@@ -86,16 +89,14 @@ class Server:
         self._serv = await asyncio.start_server(self.handle, self.host, self.port)
         logger.info("Listening on %s port %i", self.host, self.port)
 
-    async def quit(self):
+    async def shutdown(self):
         logger.info("Terminating all connections...")
-        coros = []
+        self._serv.close()
+        coros = [self._serv.wait_closed()]
         for user in self.local.users.values():
             user.writer.write_eof()
             coros.append(user.writer.wait_closed())
-        if coros:
-            await asyncio.wait(coros)
-        self._serv.close()
-        await self._serv.wait_closed()
+        await asyncio.wait(coros)
 
     async def handle(self, reader, writer):
         """ Create a new User and serve him until he disconnects or we kick him """

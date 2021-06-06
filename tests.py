@@ -55,7 +55,7 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
 
     async def test_nick_join_privmsg_quit(self):
         print()
-        server = aioircd.Server(host=None, port=None)
+        server = aioircd.Server(host=None, port=None, pwd=None)
 
         joe_read = AsyncStreamMock()
         joe_write = AsyncStreamMock()

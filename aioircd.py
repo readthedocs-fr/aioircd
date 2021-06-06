@@ -30,7 +30,9 @@ safe_addrs = [
 ]
 
 IOLevel = logging.INFO + 1
+SecurityLevel = logging.ERROR + 1
 logging.addLevelName(IOLevel, 'IO')
+logging.addLevelName(SecurityLevel, 'SECURITY')
 logger = logging.getLogger(__name__)
 
 def main():
@@ -42,6 +44,7 @@ def main():
     cli = argparse.ArgumentParser()
     cli.add_argument('--host', type=str, default='::1')
     cli.add_argument('--port', type=int, default=6667)
+    cli.add_argument('--pwd', type=str)
     cli.add_argument('-v', '--verbose', action='count', default=0)
     cli.add_argument('-s', '--silent', action='count', default=0)
     options = cli.parse_args()
@@ -51,7 +54,7 @@ def main():
     class ColoredFormatter(logging.Formatter):
         colors = {
             10: (34, 49), 20: (32, 49), 21: (37, 49),
-            30: (33, 49), 40: (31, 49), 50: (37, 41),
+            30: (33, 49), 40: (31, 49), 41: (31, 49), 50: (37, 41),
         }
         def format(self, record):
             fg, bg = type(self).colors.get(record.levelno, (32, 49))
@@ -78,7 +81,7 @@ def main():
     sigterm = asyncio.Event()
     loop.add_signal_handler(signal.SIGTERM, sigterm.set)
 
-    server = Server(options.host, options.port)
+    server = Server(options.host, options.port, options.pwd)
     loop.create_task(server.serve())
     try:
         loop.run_until_complete(sigterm.wait())
@@ -93,10 +96,10 @@ def main():
 
 
 class Server:
-    def __init__(self, host, port):
+    def __init__(self, host, port, pwd):
         self.host = host
         self.port = port
-        self.local = ServerLocal()
+        self.local = ServerLocal(pwd)
         self._serv = None
 
     async def serve(self):
@@ -130,7 +133,8 @@ class Server:
 
 class ServerLocal:
     """ Storage shared among all server's entities """
-    def __init__(self):
+    def __init__(self, pwd):
+        self.pwd = pwd
         self.users = {}
         self.channels = {}
 
@@ -173,7 +177,8 @@ class User:
         self.local = local
         self.reader = reader
         self.writer = writer
-        self.state = UserConnectedState(self)
+        self.state = None
+        self.state = StatePassword(self) if local.pwd else StateConnected(self)
         self._nick = None
         self.channels = set()
         self.uid = type(self).count
@@ -304,6 +309,18 @@ class UserState():
         return type(self).__name__[4:-5]
 
 
+class StatePassword(UserState):
+    @command
+    async def PASS(self, args):
+        if not args:
+            raise ErrNeedMoreParams('PASS')
+        if args[0] != self.user.local.pwd:
+            logger.log(SecurityLevel, "Invalid password for %s", self.user)
+            return
+
+        self.user.state = StateConnected(self.user)
+
+
 class StateConnected(UserState):
     """
     The user is just connected, he must register via the NICK command
@@ -311,8 +328,8 @@ class StateConnected(UserState):
     """
 
     @command
-    async def PONG(self, args):
-        pass
+    async def PASS(self, args):
+        raise ErrAlreadyRegistred()
 
     @command
     async def NICK(self, args):
@@ -341,8 +358,8 @@ class StateRegistered(UserState):
     """
 
     @command
-    async def PONG(self, args):
-        pass
+    async def PASS(self, args):
+        raise ErrAlreadyRegistred()
 
     @command
     async def NICK(self, args):
@@ -426,6 +443,22 @@ class IRCException(Exception):
             error=cls.msg % args,
         )
 
+class ErrNoSuchChannel(IRCException):
+    msg = "%s :No such channel"
+    code = "403"
+
+class ErrNoRecipient(IRCException):
+    msg = ":No recipient given (%s)"
+    code = "411"
+
+class ErrNoTextToSend(IRCException):
+    msg = ":No text to send"
+    code = "412"
+
+class ErrUnknownCommand(IRCException):
+    msg = "%s :Unknown command"
+    code = "421"
+
 class ErrNoNicknameGiven(IRCException):
     msg = ":No nickname given"
     code = "431"
@@ -446,22 +479,9 @@ class ErrNeedMoreParams(IRCException):
     msg = "%s :Not enough parameters"
     code = "461"
 
-class ErrNoSuchChannel(IRCException):
-    msg = "%s :No such channel"
-    code = "403"
-
-class ErrNoRecipient(IRCException):
-    msg = ":No recipient given (%s)"
-    code = "411"
-
-class ErrNoTextToSend(IRCException):
-    msg = ":No text to send"
-    code = "412"
-
-class ErrUnknownCommand(IRCException):
-    msg = "%s :Unknown command"
-    code = "421"
-
+class ErrAlreadyRegistred(IRCException):
+    msg = ":Unauthorized command (already registered)"
+    code = "462"
 
 if __name__ == "__main__":
     main()

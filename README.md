@@ -18,23 +18,9 @@ listed bellow.
 	optional arguments:
 	  --host HOST (default: ::1)
 	  --port PORT (default: 6667)
+	  --pwd PASS (default: None)
 	  -v, --verbose
 	  -s, --silent
 
 The server by default only logs `WARNING` level messages and above. You
 can increase the verbosity by repeating the `-v` option.
-
-### Architecture
-
-This minimalist IRC server was developped using the RFCs [2810], [2811],
-[2812], and [2813].
-
-It implements the `NICK`, `JOIN`, `PRIVMSG`, and `QUIT` commands.
-
-![class diagram](class_diagram.png)
-
-
-[2810]: https://tools.ietf.org/html/rfc2810
-[2811]: https://tools.ietf.org/html/rfc2811
-[2812]: https://tools.ietf.org/html/rfc2812
-[2813]: https://tools.ietf.org/html/rfc2813

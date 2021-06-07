@@ -37,6 +37,8 @@ SecurityLevel = logging.ERROR + 1
 logging.addLevelName(IOLevel, 'IO')
 logging.addLevelName(SecurityLevel, 'SECURITY')
 logger = logging.getLogger(__name__)
+logger_io = logging.getLogger(__name__ + '-IO')
+logger_io.propagate = False
 
 def main():
     """
@@ -71,9 +73,15 @@ def main():
     )
     logging.root.handlers.clear()
     logging.root.addHandler(stdout)
+    stdout_io = logging.StreamHandler()
+    stdout_io.formatter = ColoredFormatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    )
+    logger_io.addHandler(stdout_io)
 
     # Set the verbosity, enables python level warnings on -vvv
     verbosity = 10 * max(0, min(3 - options.verbose + options.silent, 5))
+    logger_io.setLevel(verbosity)
     logging.root.setLevel(verbosity)
     if verbosity == 0:
         logging.captureWarnings(True)
@@ -161,10 +169,10 @@ class Channel:
         return self._name
 
     def __str__(self):
-        return self.name
+        return self._name
 
     async def send(self, msg, skip=None):
-        logger.log(IOLevel, "%s > %s", self, msg)
+        logger_io.log(IOLevel, ">%s %s", self, msg)
         send_coros = [
             user.send(msg, log=False)
             for user in self.users
@@ -248,7 +256,7 @@ class User:
     async def serve(self):
         """ Listen for new messages and process them """
         async for line in self.read_lines():
-            logger.log(IOLevel, "%s < %s", self, line)
+            logger_io.log(IOLevel, "<%s %s", self, line)
             cmd, *args = line.split()
             func = getattr(self.state, cmd, None)
             if getattr(func, 'command', False):
@@ -263,7 +271,7 @@ class User:
     def send(self, msg: str, log=True):
         """ Send a message to the user """
         if log:
-            logger.log(IOLevel, "%s > %s", self, msg)
+            logger_io.log(IOLevel, ">%s %s", self, msg)
         self.writer.write(f"{msg}\r\n".encode())
         return self.writer.drain()  # coroutine
 

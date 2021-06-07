@@ -204,6 +204,10 @@ class User:
     def addr(self):
         return self.writer.get_extra_info('peername')[0]
 
+    @property
+    def full_id(self):
+        return f'{self.nick}!@'
+
     def __str__(self):
         return self.nick or self.addr
 
@@ -352,12 +356,15 @@ class StateConnected(UserState):
         self.user.nick = nick
         self.user.state = StateRegistered(self.user)
 
-        await self.user.send(f": 001 Welcome {self.user.nick} !")
-        await self.user.send(": 002 Your host is me")
-        await self.user.send(": 003 The server was created at some point")
-        await self.user.send(f": 004 {__name__} {__version__}  ")
-        #                                                      ^ available channel modes
-        #                                                     ^ available user modes
+        await asyncio.wait([
+            self.user.send(f": 001 {nick} :Welcome to the Internet Relay Network {self.user.full_id}"),
+            self.user.send(f": 002 {nick} :Your host is me"),
+            self.user.send(f": 003 {nick} :The server was created at some point"),
+            self.user.send(f": 004 {nick} :aioircd {__version__}  "),
+            #                                                     ^ available channel modes
+            #                                                    ^ available user modes
+        ])
+
 
 
 class StateRegistered(UserState):

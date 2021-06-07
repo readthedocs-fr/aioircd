@@ -5,15 +5,14 @@
 import argparse
 import asyncio
 import logging
+import pkg_resources
 import re
 import signal
 import textwrap
 import warnings
 from abc import ABCMeta, abstractmethod
 
-ROOT = __file__.rpartition('/')[0]
-with open(f'{ROOT}/VERSION') as fd:
-    VERSION = fd.read().strip()
+__version__ = pkg_resources.require('aioircd')[0].version
 
 nick_re = re.compile(r"[a-zA-Z][a-zA-Z0-9\-_]{0,8}")
 chann_re = re.compile(r"#[a-zA-Z0-9\-_]{1,49}")
@@ -356,9 +355,9 @@ class StateConnected(UserState):
         await self.user.send(f": 001 Welcome {self.user.nick} !")
         await self.user.send(": 002 Your host is me")
         await self.user.send(": 003 The server was created at some point")
-        await self.user.send(f": 004 {__name__} {VERSION}  ")
-        #                                                 ^ available channel modes
-        #                                                ^ available user modes
+        await self.user.send(f": 004 {__name__} {__version__}  ")
+        #                                                      ^ available channel modes
+        #                                                     ^ available user modes
 
 
 class StateRegistered(UserState):

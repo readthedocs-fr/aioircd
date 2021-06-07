@@ -86,7 +86,7 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await joe_read.read(), b": 001 Welcome Joe !\r\n")
         self.assertEqual(await joe_read.read(), b": 002 Your host is me\r\n")
         self.assertEqual(await joe_read.read(), b": 003 The server was created at some point\r\n")
-        self.assertEqual(await joe_read.read(), f": 004 {aioircd.__name__} {aioircd.VERSION}  \r\n".encode())
+        self.assertEqual(await joe_read.read(), f": 004 {aioircd.__name__} {aioircd.__version__}  \r\n".encode())
 
         leo_write.write(b'NICK Leo\r\n')
         await leo_write.drain()
@@ -142,7 +142,7 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await zoe_read.read(), b": 001 Welcome Zoe !\r\n")
         self.assertEqual(await zoe_read.read(), b": 002 Your host is me\r\n")
         self.assertEqual(await zoe_read.read(), b": 003 The server was created at some point\r\n")
-        self.assertEqual(await zoe_read.read(), f": 004 {aioircd.__name__} {aioircd.VERSION}  \r\n".encode())
+        self.assertEqual(await zoe_read.read(), f": 004 {aioircd.__name__} {aioircd.__version__}  \r\n".encode())
         self.assertEqual(await zoe_read.read(), b':Zoe JOIN #python\r\n', "JOIN response sent")
         self.assertEqual(await zoe_read.read(), b': 353 Zoe = #python :Zoe\r\n', "353 response sent")
         self.assertEqual(await zoe_read.read(), b': 366 Zoe #python :End of /NAMES list.\r\n', "366 response sent")

@@ -3,12 +3,19 @@ import collections
 import aioircd
 import asyncio
 import logging
+import warnings
+
+aioircd.HOST = ''
 
 class AsyncStreamMock:
+    count = 0
+
     def __init__(self):
         self.queue = asyncio.Queue()
         self.enqueued = collections.deque()
         self.sentinel = b""
+        self.id = type(self).count
+        type(self).count += 1
 
     def all_messages(self):
         return self.queue._queue + self.enqueued
@@ -36,11 +43,17 @@ class AsyncStreamMock:
         await asyncio.wait_for(_wait_closed(), 1)
         self.queue.get_nowait()
 
+    def at_eof(self):
+        return self.is_closed()
+
+    def is_closing(self):
+        return self.is_closed()
+
     def is_closed(self):
         return not self.queue.empty() and self.queue._queue[0] == self.sentinel
 
     def get_extra_info(self, *args):
-        return ("127.0.0.1", 0)
+        return ("127.0.0.1", 49152 + self.id)  # Ephemeral port
 
 
 class TestIRC(unittest.IsolatedAsyncioTestCase):
@@ -52,43 +65,39 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
         return await asyncio.wait_for(_wait(), 1)
 
-
     async def test_nick_join_privmsg_quit(self):
         print()
         server = aioircd.Server(host=None, port=None, pwd=None)
 
         joe_read = AsyncStreamMock()
         joe_write = AsyncStreamMock()
-        joe_task = asyncio.create_task(
-            server.handle(joe_write, joe_read)
-        )
+        joe_task = server.handle(joe_write, joe_read)
+        self.addCleanup(joe_task.cancel)
 
         leo_read = AsyncStreamMock()
         leo_write = AsyncStreamMock()
-        leo_task = asyncio.create_task(
-            server.handle(leo_write, leo_read)
-        )
+        leo_task = server.handle(leo_write, leo_read)
+        self.addCleanup(leo_task.cancel)
 
         zoe_read = AsyncStreamMock()
         zoe_write = AsyncStreamMock()
-        zoe_task = asyncio.create_task(
-            server.handle(zoe_write, zoe_read)
-        )
+        zoe_task = server.handle(zoe_write, zoe_read)
+        self.addCleanup(zoe_task.cancel)
 
         self.assertFalse(server.local.users, "No user should be registered yet")
         self.assertFalse(server.local.channels, "There should be no channel yet.")
 
         # Nick
-        joe_write.write(b'NICK Joe\r\n')
+        joe_write.write(b'NICK Joe\r\nUSER joe * 0 :joe\r\n')
         await joe_write.drain()
         joe = await self.wait(lambda: server.local.users.get('Joe'))
         self.assertIsInstance(joe.state, aioircd.StateRegistered, "Joe should be registered")
         self.assertEqual(await joe_read.read(), b": 001 Joe :Welcome to the Internet Relay Network Joe!@\r\n")
-        self.assertEqual(await joe_read.read(), b": 002 Joe :Your host is me\r\n")
+        self.assertEqual(await joe_read.read(), b": 002 Joe :Your host is \r\n")
         self.assertEqual(await joe_read.read(), b": 003 Joe :The server was created at some point\r\n")
         self.assertEqual(await joe_read.read(), f": 004 Joe :aioircd {aioircd.__version__}  \r\n".encode())
 
-        leo_write.write(b'NICK Leo\r\n')
+        leo_write.write(b'NICK Leo\r\nUSER leo * 0 :leo\r\n')
         await leo_write.drain()
         leo = await self.wait(lambda: server.local.users.get('Leo'))
         self.assertIsInstance(leo.state, aioircd.StateRegistered, "Leo should be registered")
@@ -131,6 +140,7 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
         # Connect Zoe, she is pretty quick to send all the commands
         zoe_write.write(
             b'NICK Zoe\r\n'
+            b'USER zoe * 0 :zoe\r\n'
             b'JOIN #python\r\n'
             b'PRIVMSG #python :Where is everyone ?\r\n'
             b'JOIN #aioircd\r\n'
@@ -140,7 +150,7 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
         await zoe_write.drain()
         zoe = await self.wait(lambda: server.local.users.get('Zoe'))
         self.assertEqual(await zoe_read.read(), b": 001 Zoe :Welcome to the Internet Relay Network Zoe!@\r\n")
-        self.assertEqual(await zoe_read.read(), b": 002 Zoe :Your host is me\r\n")
+        self.assertEqual(await zoe_read.read(), b": 002 Zoe :Your host is \r\n")
         self.assertEqual(await zoe_read.read(), b": 003 Zoe :The server was created at some point\r\n")
         self.assertEqual(await zoe_read.read(), f": 004 Zoe :aioircd {aioircd.__version__}  \r\n".encode())
         self.assertEqual(await zoe_read.read(), b':Zoe JOIN #python\r\n', "JOIN response sent")
@@ -191,8 +201,12 @@ class TestIRC(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(server.local.users, "There should be two registered users.")
         self.assertFalse(server.local.channels, "There should be one channel.")
+        print()
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level="INFO")
+    logging.basicConfig(level="DEBUG")
+    logging.getLogger('aioircd-IO').propagate = True
+    logging.captureWarnings(True)
+    warnings.filterwarnings('default')
     unittest.main()

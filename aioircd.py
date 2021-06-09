@@ -11,8 +11,13 @@ import signal
 import textwrap
 import warnings
 from abc import ABCMeta, abstractmethod
+from socket import gethostname, gethostbyname
 
 __version__ = pkg_resources.require('aioircd')[0].version
+
+HOST = gethostname()
+TIMEOUT = 60
+PING_TIMEOUT = 5
 
 nick_re = re.compile(r"[a-zA-Z][a-zA-Z0-9\-_]{0,8}")
 chann_re = re.compile(r"#[a-zA-Z0-9\-_]{1,49}")
@@ -47,7 +52,7 @@ def main():
     """
 
     cli = argparse.ArgumentParser()
-    cli.add_argument('--host', type=str, default='::1')
+    cli.add_argument('--host', type=str, default=gethostbyname(HOST))
     cli.add_argument('--port', type=int, default=6667)
     cli.add_argument('--pwd', type=str)
     cli.add_argument('-v', '--verbose', action='count', default=0)
@@ -94,7 +99,7 @@ def main():
     loop.add_signal_handler(signal.SIGTERM, sigterm.set)
 
     server = Server(options.host, options.port, options.pwd)
-    loop.create_task(server.serve())
+    loop.create_task(server.start())
     try:
         loop.run_until_complete(sigterm.wait())
     except Exception:
@@ -109,12 +114,13 @@ def main():
 
 class Server:
     def __init__(self, host, port, pwd):
+        self._serv = None
+        self._tasks = {}
         self.host = host
         self.port = port
         self.local = ServerLocal(pwd)
-        self._serv = None
 
-    async def serve(self):
+    async def start(self):
         """ Start listening for new connections """
         self._serv = await asyncio.start_server(self.handle, self.host, self.port)
         logger.info("Listening on %s port %i", self.host, self.port)
@@ -122,33 +128,41 @@ class Server:
     async def shutdown(self):
         logger.info("Terminating all connections...")
         self._serv.close()
-        coros = [self._serv.wait_closed()]
-        for user in self.local.users.values():
-            user.writer.write_eof()
-            coros.append(user.writer.wait_closed())
-        await asyncio.wait(coros)
+        await self._serv.wait_closed()
+        if self._tasks:
+            await asyncio.wait(
+                [user.terminate() for user in self.local.users.values()]
+                + list(self._tasks.values())
+            )
 
-    async def handle(self, reader, writer):
+    def handle(self, reader, writer):
+        task = asyncio.create_task(self._handle(reader, writer))
+        self._tasks[writer.get_extra_info('peername')] = task
+        return task
+
+    async def _handle(self, reader, writer):
         """ Create a new User and serve him until he disconnects or we kick him """
         peeraddr = writer.get_extra_info('peername')[0]
         logger.info("New connection from %s", peeraddr)
         user = User(self.local, reader, writer)
+        ping = asyncio.create_task(user.ping_forever())
         try:
             await user.serve()
         except Exception:
             logger.exception("Error in client loop !")
+        ping.cancel()
         self.local.users.pop(user.nick, None)
         writer.close()
         await writer.wait_closed()
         logger.info("Connection with %s closed", peeraddr)
-
+        del self._tasks[writer.get_extra_info('peername')]
 
 class ServerLocal:
     """ Storage shared among all server's entities """
     def __init__(self, pwd):
-        self.pwd = pwd
         self.users = {}
         self.channels = {}
+        self.pwd = pwd
 
 
 class Channel:
@@ -189,9 +203,11 @@ class User:
         self.local = local
         self.reader = reader
         self.writer = writer
+        self._ping_event = asyncio.Event()
+        self._ping_cb = asyncio.Future()  # dummy
+        self._nick = None
         self.state = None
         self.state = StatePassword(self) if local.pwd else StateConnected(self)
-        self._nick = None
         self.channels = set()
         self.uid = type(self).count
         type(self).count += 1
@@ -219,6 +235,22 @@ class User:
     def __str__(self):
         return self.nick or self.addr
 
+    def reschedule_ping(self):
+        loop = asyncio.get_running_loop()
+        self._ping_cb.cancel()
+        self._ping_cb = loop.call_later(TIMEOUT - PING_TIMEOUT, self._ping_event.set)
+        logger.debug("ping to %s rescheduled", self)
+
+    async def ping_forever(self):
+        try:
+            while True:
+                logger.debug("waiting to send ping to %s...", self)
+                await self._ping_event.wait()
+                self._ping_event.clear()
+                await self.send(f'PING {HOST}')
+        except asyncio.CancelledError:
+            pass
+
     async def read_lines(self):
         """
         Read messages until (i) the user send a QUIT command or (ii) the
@@ -226,15 +258,26 @@ class User:
         connection is reset.
         """
         buffer = b""
+        graceful_close = True
         while type(self.state) != StateQuit:
+            chunk = b""
+            self._read_task = asyncio.create_task(self.reader.read(1024))
+            self.reschedule_ping()
             try:
-                chunk = await self.reader.read(1024)
+                chunk = await asyncio.wait_for(self._read_task, TIMEOUT)
+            except asyncio.CancelledError:
+                buffer = b"QUIT :Kicked\r\n"
+                graceful_close = False
+            except asyncio.TimeoutError:
+                buffer = b"QUIT :Ping timeout\r\n"
+                graceful_close = False
             except ConnectionResetError:
-                await self.state.QUIT(":Connection reset by peer".split())
-                return  # Force disconnection
-            if not chunk:
-                await self.state.QUIT(":EOF received".split())
-                break  # Graceful disconnection
+                buffer = b"QUIT :Connection reset by peer\r\n"
+                graceful_close = False
+            else:
+                if not chunk:
+                    buffer = b"QUIT :EOF Received\r\n"
+
 
             # imagine two messages of 768 bytes are sent together, read(1024)
             # only read the first one and the 256 first bytes of the second,
@@ -247,11 +290,16 @@ class User:
                 raise MemoryError("Message exceed 1024 bytes")
 
             for line in lines:
-                yield line.decode()
+                try:
+                    line = line.decode('utf-8')
+                except UnicodeDecodeError:
+                    line = line.decode('latin-1')
+                yield line
 
-        # gracefull disconnection
-        self.writer.write_eof()
-        await self.writer.drain()
+        if graceful_close:
+            self.writer.write_eof()
+            await self.writer.drain()
+
 
     async def serve(self):
         """ Listen for new messages and process them """
@@ -268,12 +316,20 @@ class User:
             else:
                 logger.warning("%s sent an unknown command: %s", self, cmd)
 
-    def send(self, msg: str, log=True):
+    async def send(self, msg: str, log=True):
         """ Send a message to the user """
-        if log:
-            logger_io.log(IOLevel, ">%s %s", self, msg)
-        self.writer.write(f"{msg}\r\n".encode())
-        return self.writer.drain()  # coroutine
+        if self.writer.is_closing():
+            return
+        for line in msg.splitlines():
+            if log:
+                logger_io.log(IOLevel, ">%s %s", self, line)
+            self.writer.write(f"{line}\r\n".encode())
+        await self.writer.drain()
+
+    async def terminate(self):
+        asyncio.get_running_loop().call_later(PING_TIMEOUT, self._read_task.cancel)
+        self.writer.write_eof()
+        await self.writer.drain()
 
 
 def command(func):
@@ -293,8 +349,18 @@ class UserState():
         self.user = user
 
     @command
-    async def PONG(self, args):
+    async def PING(self, args):
+        # ignored, reset timeout alarm
         pass
+
+    @command
+    async def PONG(self, args):
+        # ignored, reset timeout alarm
+        pass
+
+    @command
+    async def USER(self, args):
+        logger.debug("user called by %s while in wrong state.", self.user)
 
     @command
     async def PASS(self, args):
@@ -324,7 +390,7 @@ class UserState():
         self.user.state = StateQuit(self.user)
 
     def __str__(self):
-        return type(self).__name__[4:-5]
+        return type(self).__name__[5:]
 
 
 class StatePassword(UserState):
@@ -344,10 +410,23 @@ class StateConnected(UserState):
     The user is just connected, he must register via the NICK command
     first before going on.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.has_nick = False
+        self.has_user = False
 
     @command
     async def PASS(self, args):
         raise ErrAlreadyRegistred()
+
+    @command
+    async def USER(self, args):
+        if len(args) < 4:
+            raise ErrNeedMoreParams('USER')
+
+        self.has_user = True
+        if self.has_user and self.has_nick:
+            await self.register()
 
     @command
     async def NICK(self, args):
@@ -362,16 +441,21 @@ class StateConnected(UserState):
             raise ErrErroneusNickname(nick)
 
         self.user.nick = nick
-        self.user.state = StateRegistered(self.user)
+        self.has_nick = True
+        if self.has_user and self.has_nick:
+            await self.register()
 
-        await asyncio.wait([
-            self.user.send(f": 001 {nick} :Welcome to the Internet Relay Network {self.user.full_id}"),
-            self.user.send(f": 002 {nick} :Your host is me"),
-            self.user.send(f": 003 {nick} :The server was created at some point"),
-            self.user.send(f": 004 {nick} :aioircd {__version__}  "),
-            #                                                     ^ available channel modes
-            #                                                    ^ available user modes
-        ])
+    async def register(self):
+        self.user.state = StateRegistered(self.user)
+        nick = self.user.nick
+        await self.user.send(textwrap.dedent(f"""\
+            :{HOST} 001 {nick} :Welcome to the Internet Relay Network {self.user.full_id}
+            :{HOST} 002 {nick} :Your host is {HOST}
+            :{HOST} 003 {nick} :The server was created at some point
+            :{HOST} 004 {nick} :aioircd {__version__}  """))
+            #                                          ^ available channel modes
+            #                                         ^ available user modes
+
 
 
 
@@ -383,6 +467,10 @@ class StateRegistered(UserState):
 
     @command
     async def PASS(self, args):
+        raise ErrAlreadyRegistred()
+
+    @command
+    async def USER(self, args):
         raise ErrAlreadyRegistred()
 
     @command
@@ -417,11 +505,11 @@ class StateRegistered(UserState):
 
             # Send NAMES list to joiner
             nicks = " ".join(sorted(user.nick for user in chann.users))
-            prefix = f": 353 {self.user.nick} = {channel} :"
+            prefix = f":{HOST} 353 {self.user.nick} = {channel} :"
             maxwidth = 1024 - len(prefix) - 2  # -2 is \r\n
             for line in textwrap.wrap(nicks, width=maxwidth):
                 await self.user.send(prefix + line)
-            await self.user.send(f": 366 {self.user.nick} {channel} :End of /NAMES list.")
+            await self.user.send(f":{HOST} 366 {self.user.nick} {channel} :End of /NAMES list.")
 
     @command
     async def PRIVMSG(self, args):
@@ -462,7 +550,8 @@ class IRCException(Exception):
 
     @classmethod
     def format(cls, *args):
-        return ": {code} {error}".format(
+        return ":{host} {code} {error}".format(
+            host=HOST,
             code=cls.code,
             error=cls.msg % args,
         )

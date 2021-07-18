@@ -1,212 +1,208 @@
+import os
 import unittest
-import collections
+import trio
+import contextlib
+import textwrap
+from functools import partial
+from operator import attrgetter
+from trio.testing import open_stream_to_socket_listener
+
+
+os.environ['HOST'] = 'ip6-localhost'
+os.environ['ADDR'] = '::1'
+os.environ['PORT'] = '6667'
+os.environ['PASS'] = 'youwillneverguess'
+os.environ['LOGLEVEL'] = 'DEBUG'
+
 import aioircd
-import asyncio
-import logging
-import warnings
+from aioircd.config import *
+from aioircd.server import Server, ServLocal
+from aioircd.states import *
+from aioircd.channel import Channel
 
-aioircd.HOST = ''
-
-class AsyncStreamMock:
-    count = 0
-
-    def __init__(self):
-        self.queue = asyncio.Queue()
-        self.enqueued = collections.deque()
-        self.sentinel = b""
-        self.id = type(self).count
-        type(self).count += 1
-
-    def all_messages(self):
-        return self.queue._queue + self.enqueued
-
-    def write(self, s):
-        self.enqueued.append(s)
-
-    def write_eof(self):
-        self.enqueued.append(self.sentinel)
-
-    async def drain(self):
-        while self.enqueued:
-            await self.queue.put(self.enqueued.popleft())
-
-    async def read(self, n=0):
-        return await asyncio.wait_for(self.queue.get(), 1)
-
-    def close(self):
-        self.queue.put_nowait(self.sentinel)
-
-    async def wait_closed(self):
-        async def _wait_closed():
-            while not self.is_closed():
-                await asyncio.sleep(0)
-        await asyncio.wait_for(_wait_closed(), 1)
-        self.queue.get_nowait()
-
-    def at_eof(self):
-        return self.is_closed()
-
-    def is_closing(self):
-        return self.is_closed()
-
-    def is_closed(self):
-        return not self.queue.empty() and self.queue._queue[0] == self.sentinel
-
-    def get_extra_info(self, *args):
-        return ("127.0.0.1", 49152 + self.id)  # Ephemeral port
+users = []
+class FakeUser(aioircd.user.User):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        users.append(self)
+aioircd.user.User = aioircd.server.User = FakeUser
 
 
-class TestIRC(unittest.IsolatedAsyncioTestCase):
-    async def wait(self, func):
-        async def _wait():
-            while True:
-                if result := func():
-                    return result
-                await asyncio.sleep(0)
-        return await asyncio.wait_for(_wait(), 1)
+async def waitfor(predicate):
+    """ Wait for at most .1 secconds for ``predicate()`` be be truthy. """
+    with trio.move_on_after(.1):
+        while not predicate():
+            await trio.sleep(.01)
+        return True
+    return False
 
-    async def test_nick_join_privmsg_quit(self):
-        print()
-        server = aioircd.Server(host=None, port=None, pwd=None)
 
-        joe_read = AsyncStreamMock()
-        joe_write = AsyncStreamMock()
-        joe_task = server.handle(joe_write, joe_read)
-        self.addCleanup(joe_task.cancel)
+async def consome_sock(sock):
+    """ Receive as many bytes as possible from ``sock`` during .1 seconds """
+    buffer = b""
+    with trio.move_on_after(.1):
+        while chunk := await sock.receive_some():
+            buffer += chunk
+    return buffer
 
-        leo_read = AsyncStreamMock()
-        leo_write = AsyncStreamMock()
-        leo_task = server.handle(leo_write, leo_read)
-        self.addCleanup(leo_task.cancel)
 
-        zoe_read = AsyncStreamMock()
-        zoe_write = AsyncStreamMock()
-        zoe_task = server.handle(zoe_write, zoe_read)
-        self.addCleanup(zoe_task.cancel)
+class TestProtocol(unittest.TestCase):
+ def test_bigfattest(self):
+  @trio.run
+  async def run():
+   async with trio.open_nursery() as nursery:
 
-        self.assertFalse(server.local.users, "No user should be registered yet")
-        self.assertFalse(server.local.channels, "There should be no channel yet.")
+    # Create and stack a background IRC server
+    server = Server(ADDR, PORT, PASS)
+    servlocal = ServLocal(HOST, server.pwd, {}, {})
+    aioircd.servlocal.set(servlocal)
+    listeners = await nursery.start(partial(trio.serve_tcp, server.handle, 0, host='::1'))
 
-        # Nick
-        joe_write.write(b'NICK Joe\r\nUSER joe * 0 :joe\r\n')
-        await joe_write.drain()
-        joe = await self.wait(lambda: server.local.users.get('Joe'))
-        self.assertIsInstance(joe.state, aioircd.StateRegistered, "Joe should be registered")
-        self.assertEqual(await joe_read.read(), b": 001 Joe :Welcome to the Internet Relay Network Joe!@\r\n")
-        self.assertEqual(await joe_read.read(), b": 002 Joe :Your host is \r\n")
-        self.assertEqual(await joe_read.read(), b": 003 Joe :The server was created at some point\r\n")
-        self.assertEqual(await joe_read.read(), f": 004 Joe :aioircd {aioircd.__version__}  \r\n".encode())
+    # Connect Bob
+    bob_sock = await open_stream_to_socket_listener(listeners[0])
+    self.assertTrue(await waitfor(lambda: len(users) == 1))
+    bob = users[0]
+    self.assertEqual(type(bob.state), PasswordState)
 
-        leo_write.write(b'NICK Leo\r\nUSER leo * 0 :leo\r\n')
-        await leo_write.drain()
-        leo = await self.wait(lambda: server.local.users.get('Leo'))
-        self.assertIsInstance(leo.state, aioircd.StateRegistered, "Leo should be registered")
-        self.assertEqual(len(leo_read.all_messages()), 4)
-        for _ in range(4):
-            await leo_read.read()
+    # Bob sends PASS
+    await bob_sock.send_all(b"PASS youwillneverguess\r\n")
+    self.assertEqual(b"", await consome_sock(bob_sock), "The PASS command does not reply")
+    self.assertEqual(type(bob.state), ConnectedState)
 
-        self.assertEqual(set(server.local.users), {'Joe', 'Leo'}, "There should be two registered users.")
-        self.assertFalse(server.local.channels, "There should be no channel yet.")
+    # Bob sends NICK and USER
+    await bob_sock.send_all(b"NICK bob\r\n")
+    self.assertEqual(b"", await consome_sock(bob_sock), "Only NICK without USER does not reply")
+    await bob_sock.send_all(b"USER bob 0 * :Bob\r\n")
+    self.assertEqual(await consome_sock(bob_sock), textwrap.dedent("""\
+        :ip6-localhost 001 bob :Welcome to the Internet Relay Network bob\r
+        :ip6-localhost 002 bob :Your host is ip6-localhost, running version 1.2.0\r
+        :ip6-localhost 003 bob :The server was created someday\r
+        :ip6-localhost 004 bob aioircd 1.2.0  \r
+        :ip6-localhost 005 bob AWAYLEN=0 CASEMAPPING=ascii CHANLIMIT=#:,&: CHANMODES= CHANNELLEN=50 CHANTYPES=& ELIST= :are supported by this server\r
+        :ip6-localhost 005 bob HOSTLEN=63 KICKLEN=0 MAXLIST= MAXTARGETS=12MODES=0 NICKLEN=15 STATUSMSG= TOPICLEN=0 USERLEN=1 :are supported by this server\r
+        :ip6-localhost 422 bob :MOTD File is missing\r
+        """).encode())
+    self.assertEqual(type(bob.state), RegisteredState)
 
-        # Join
-        joe_write.write(b'JOIN #aioircd\r\n')
-        await joe_write.drain()
-        self.assertEqual(await joe_read.read(), b':Joe JOIN #aioircd\r\n', "JOIN response sent")
-        self.assertEqual(await joe_read.read(), b': 353 Joe = #aioircd :Joe\r\n', "353 response sent")
-        self.assertEqual(await joe_read.read(), b': 366 Joe #aioircd :End of /NAMES list.\r\n', "366 response sent")
-        self.assertFalse(joe_read.all_messages(), "There shoud be no more JOIN response")
-        self.assertEqual(set(server.local.channels), {"#aioircd"}, "There should be one channel.")
-        self.assertEqual({user.nick for user in server.local.channels['#aioircd'].users}, {'Joe'}, "There should be one user in the channel.")
+    # Connect Eve, she sends PASS+NICK+USER and consumes the motd
+    eve_sock = await open_stream_to_socket_listener(listeners[0])
+    await eve_sock.send_all(textwrap.dedent("""\
+        PASS youwillneverguess\r
+        NICK eve\r
+        USER eve 0 * :Eve\r
+        """).encode())
+    await consome_sock(eve_sock)
+    eve = users[1]
+    self.assertEqual(type(eve.state), RegisteredState)
 
-        leo_write.write(b'JOIN #aioircd\r\n')
-        await leo_write.drain()
-        self.assertEqual(await leo_read.read(), b':Leo JOIN #aioircd\r\n', "JOIN response sent")
-        self.assertEqual(await leo_read.read(), b': 353 Leo = #aioircd :Joe Leo\r\n', "353 response sent")
-        self.assertEqual(await leo_read.read(), b': 366 Leo #aioircd :End of /NAMES list.\r\n', "366 response sent")
-        self.assertFalse(leo_read.all_messages(), "There shoud be no more JOIN response")
+    # Connect Liz, she sends PASS+NICK+USER and consumes the motd
+    liz_sock = await open_stream_to_socket_listener(listeners[0])
+    await liz_sock.send_all(textwrap.dedent("""\
+        PASS youwillneverguess\r
+        NICK liz\r
+        USER liz 0 * :Liz\r
+        """).encode())
+    await consome_sock(liz_sock)
+    liz = users[2]
+    self.assertEqual(type(liz.state), RegisteredState)
 
-        self.assertEqual(await joe_read.read(), b':Leo JOIN #aioircd\r\n', "JOIN relayed to Joe")
-        self.assertFalse(joe_read.all_messages(), "The JOIN relayed message is only one message")
+    # Bob sends JOIN
+    self.assertFalse(bob.channels)
+    self.assertNotIn('#readthedocs', servlocal.channels)
+    await bob_sock.send_all(b"JOIN #readthedocs\r\n")
+    self.assertEqual(await consome_sock(bob_sock), textwrap.dedent("""\
+        :bob JOIN #readthedocs\r
+        :ip6-localhost 353 bob = #readthedocs :bob\r
+        :ip6-localhost 366 bob #readthedocs :End of /NAMES list.\r
+        """).encode())
+    self.assertIn('#readthedocs', servlocal.channels)
+    rtdchan = servlocal.channels['#readthedocs']
+    self.assertIn(rtdchan, bob.channels)
+    self.assertIn(bob, rtdchan.users)
 
-        self.assertEqual(set(server.local.channels), {"#aioircd"}, "There should be one channel.")
-        self.assertEqual({user.nick for user in server.local.channels['#aioircd'].users}, {'Joe', 'Leo'}, "There should be two users in the channel.")
+    # Eve JOIN readthedocs
+    await eve_sock.send_all(b"JOIN #readthedocs\r\n")
+    self.assertEqual(await consome_sock(eve_sock), textwrap.dedent("""\
+        :eve JOIN #readthedocs\r
+        :ip6-localhost 353 eve = #readthedocs :bob eve\r
+        :ip6-localhost 366 eve #readthedocs :End of /NAMES list.\r
+        """).encode())
+    self.assertEqual(await consome_sock(bob_sock), b":eve JOIN #readthedocs\r\n")
+    self.assertIn(rtdchan, eve.channels)
+    self.assertIn(eve, rtdchan.users)
 
-        # Privmsg
-        joe_write.write(b'PRIVMSG #aioircd :Hello Leo !\r\n')
-        await joe_write.drain()
-        self.assertEqual(await leo_read.read(), b':Joe PRIVMSG #aioircd :Hello Leo !\r\n', "PRIVMSG relayed to Leo")
-        self.assertFalse(joe_read.all_messages(), "The message is not sent back to Joe")
+    # Liz LIST all channels
+    await liz_sock.send_all(b"LIST\r\n")
+    self.assertEqual(await consome_sock(liz_sock), textwrap.dedent("""\
+        :ip6-localhost 321 liz Channel :Users Name\r
+        :ip6-localhost 322 liz #readthedocs 2 :\r
+        :ip6-localhost 323 liz :End of /LIST\r
+        """).encode())
 
-        # Connect Zoe, she is pretty quick to send all the commands
-        zoe_write.write(
-            b'NICK Zoe\r\n'
-            b'USER zoe * 0 :zoe\r\n'
-            b'JOIN #python\r\n'
-            b'PRIVMSG #python :Where is everyone ?\r\n'
-            b'JOIN #aioircd\r\n'
-            b'PRIVMSG #aioircd :Hello boys :p\r\n'
-            b'PRIVMSG Leo :What\'s up ?\r\n'
-        )
-        await zoe_write.drain()
-        zoe = await self.wait(lambda: server.local.users.get('Zoe'))
-        self.assertEqual(await zoe_read.read(), b": 001 Zoe :Welcome to the Internet Relay Network Zoe!@\r\n")
-        self.assertEqual(await zoe_read.read(), b": 002 Zoe :Your host is \r\n")
-        self.assertEqual(await zoe_read.read(), b": 003 Zoe :The server was created at some point\r\n")
-        self.assertEqual(await zoe_read.read(), f": 004 Zoe :aioircd {aioircd.__version__}  \r\n".encode())
-        self.assertEqual(await zoe_read.read(), b':Zoe JOIN #python\r\n', "JOIN response sent")
-        self.assertEqual(await zoe_read.read(), b': 353 Zoe = #python :Zoe\r\n', "353 response sent")
-        self.assertEqual(await zoe_read.read(), b': 366 Zoe #python :End of /NAMES list.\r\n', "366 response sent")
-        self.assertEqual(await zoe_read.read(), b':Zoe JOIN #aioircd\r\n', "JOIN response sent")
-        self.assertEqual(await zoe_read.read(), b': 353 Zoe = #aioircd :Joe Leo Zoe\r\n', "353 response sent")
-        self.assertEqual(await zoe_read.read(), b': 366 Zoe #aioircd :End of /NAMES list.\r\n', "366 response sent")
-        self.assertFalse(zoe_read.all_messages(), "There should be no more message")
+    # Liz JOIN readthedocs too
+    await liz_sock.send_all(b"JOIN #readthedocs\r\n")
+    await consome_sock(bob_sock)
+    await consome_sock(eve_sock)
+    self.assertEqual(await consome_sock(liz_sock), textwrap.dedent("""\
+        :liz JOIN #readthedocs\r
+        :ip6-localhost 353 liz = #readthedocs :bob eve liz\r
+        :ip6-localhost 366 liz #readthedocs :End of /NAMES list.\r
+        """).encode())
+    self.assertIn(rtdchan, liz.channels)
+    self.assertIn(liz, rtdchan.users)
 
-        # Ensure the two others got the various messages
-        self.assertEqual(await joe_read.read(), b':Zoe JOIN #aioircd\r\n', "JOIN relayed to Joe")
-        self.assertEqual(await joe_read.read(), b':Zoe PRIVMSG #aioircd :Hello boys :p\r\n', "channel message relayed to Joe")
-        self.assertFalse(joe_read.all_messages(), "There should be no more message")
+    # Eve greeting the chat
+    await eve_sock.send_all(b"PRIVMSG #readthedocs :Hi all!\r\n")
+    self.assertEqual(await consome_sock(eve_sock), b"")
+    self.assertEqual(await consome_sock(liz_sock), b":eve PRIVMSG #readthedocs :Hi all!\r\n")
+    self.assertEqual(await consome_sock(bob_sock), b":eve PRIVMSG #readthedocs :Hi all!\r\n")
 
-        self.assertEqual(await leo_read.read(), b':Zoe JOIN #aioircd\r\n', "JOIN relayed to Leo")
-        self.assertEqual(await leo_read.read(), b':Zoe PRIVMSG #aioircd :Hello boys :p\r\n', "channel message relayed to Leo")
-        self.assertEqual(await leo_read.read(), b':Zoe PRIVMSG Leo :What\'s up ?\r\n', "private message relayed to Leo")
-        self.assertFalse(leo_read.all_messages(), "There should be no more message")
+    # Eve PART from readthedocs
+    await eve_sock.send_all(b"PART #readthedocs :I'm taking a break\r\n")
+    self.assertTrue(await waitfor(lambda: rtdchan not in eve.channels))
+    self.assertEqual(await consome_sock(eve_sock), b"")
+    self.assertEqual(await consome_sock(liz_sock), b":eve PART #readthedocs :I'm taking a break\r\n")
+    self.assertEqual(await consome_sock(bob_sock), b":eve PART #readthedocs :I'm taking a break\r\n")
+    self.assertNotIn(rtdchan, eve.channels)
+    self.assertNotIn(eve, rtdchan.users)
 
-        self.assertEqual(set(server.local.users), {'Joe', 'Leo', 'Zoe'}, "There should be two registered users.")
-        self.assertEqual(set(server.local.channels), {'#aioircd', '#python'}, "There should be two channels.")
+    # Liz send message to Eve
+    await liz_sock.send_all(b"PRIVMSG eve :Hi, how are you ?\r\n")
+    self.assertEqual(await consome_sock(bob_sock), b"")
+    self.assertEqual(await consome_sock(liz_sock), b"")
+    self.assertEqual(await consome_sock(eve_sock), b":liz PRIVMSG eve :Hi, how are you ?\r\n")
 
-        zoe_write.write(b'QUIT :Bye\r\n')
-        zoe_write.write_eof()
-        await zoe_write.drain()
-        await zoe_read.wait_closed()
-        await asyncio.wait_for(zoe_task, 1)
-        self.assertIsInstance(zoe.state, aioircd.StateQuit, "Zoe quit")
+    # Bob check users in the channel
+    await bob_sock.send_all(b"NAMES #readthedocs\r\n")
+    self.assertEqual(await consome_sock(bob_sock), textwrap.dedent("""\
+        :ip6-localhost 353 bob = #readthedocs :bob liz\r
+        :ip6-localhost 366 bob #readthedocs :End of /NAMES list.\r
+        """).encode())
 
-        self.assertEqual(set(server.local.users), {'Joe', 'Leo'}, "There should be two registered users.")
-        self.assertEqual(set(server.local.channels), {'#aioircd'}, "There should be one channel.")
+    # Bob QUIT the server, he need to sleep
+    await bob_sock.send_all(b"QUIT :Bye\r\n")
 
-        self.assertEqual(await joe_read.read(), b':Zoe QUIT :Bye\r\n', "QUIT relayed to Joe")
-        self.assertEqual(await leo_read.read(), b':Zoe QUIT :Bye\r\n', "QUIT relayed to Leo")
+    self.assertEqual(await consome_sock(eve_sock), b"")  # she has no channel in common with bob
+    self.assertEqual(await consome_sock(liz_sock), b":bob QUIT :Quit: Bye\r\n")
+    self.assertTrue(await waitfor(lambda: type(bob.state) == QuitState))
+    self.assertNotIn(rtdchan, bob.channels)
+    self.assertNotIn(bob, rtdchan.users)
 
-        # Close both connexion
-        joe_write.write_eof()
-        await joe_write.drain()
-        await joe_read.wait_closed()
-        await asyncio.wait_for(joe_task, 1)
+    # Liz QUIT the server too, but we don't know why
+    await liz_sock.send_all(b"QUIT\r\n")
+    self.assertTrue(await waitfor(lambda: type(liz.state) == QuitState))
+    self.assertNotIn(rtdchan, liz.channels)
+    self.assertNotIn(liz, rtdchan.users)
+    self.assertNotIn(rtdchan, servlocal.channels)
 
-        leo_write.write_eof()
-        await leo_write.drain()
-        await leo_read.read()  # Consume the QUIT relayed message
-        await leo_read.wait_closed()
-        await asyncio.wait_for(leo_task, 1)
+    # Eve QUIT the server
+    await eve_sock.send_all(b"QUIT\r\n")
+    self.assertTrue(await waitfor(lambda: type(eve.state) == QuitState))
 
-        self.assertFalse(server.local.users, "There should be two registered users.")
-        self.assertFalse(server.local.channels, "There should be one channel.")
-        print()
-
+    # Stop the server
+    nursery.cancel_scope.cancel()
 
 if __name__ == '__main__':
+    import logging
     logging.basicConfig(level="DEBUG")
-    logging.getLogger('aioircd-IO').propagate = True
-    logging.captureWarnings(True)
-    warnings.filterwarnings('default')
     unittest.main()

@@ -88,7 +88,7 @@ class User:
         while True:
             with trio.move_on_after(TIMEOUT - PING_TIMEOUT) as self._ping_timer:
                 await trio.sleep_forever()
-            await self.stream.send_all(b'PING\r\n')
+            await self.send('PING', log=False)
 
     async def serve(self):
         """
@@ -110,14 +110,18 @@ class User:
             elif not chunk:
                 raise Disconnect("End of transmission")
 
-            # Split the buffer into as many IRC messages as possible, ensure
-            # each message has a length of maximum MAXLINELEN
+            # Split the buffer into as many IRC messages as possible,
+            # ensure each message has a length of maximum MAXLINELEN
             *messages, buffer = (buffer + chunk).split(b'\r\n')
             if any(len(m) > aioircd.MAXLINELEN - 2 for m in messages + [buffer]):
                 raise Disconnect("Payload too long")
 
             for message in (m for m in messages if m):
-                logger.log(aioircd.IO, "recv from %s: %s", self, message)
+                # IO-log all messages, except PING/PONG that are only
+                # log in DEBUG
+                if not (message.startswith(b'PING') or message.startswith(b'PONG')
+                   ) or logger.isEnabledFor(logging.DEBUG):
+                    logger.log(aioircd.IO, "recv from %s: %s", self, message)
 
                 # Parse the message
                 try:

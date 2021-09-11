@@ -55,7 +55,7 @@ class UserState(metaclass=abc.ABCMeta):
 
     @command
     async def PING(self, *whatever):
-        await self.user.send(f"PONG {' '.join(whatever)}")
+        await self.user.send(f"PONG {' '.join(whatever)}", log=False)
 
     @command
     async def PONG(self, *whatever):

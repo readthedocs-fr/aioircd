@@ -88,7 +88,7 @@ class User:
         while True:
             with trio.move_on_after(TIMEOUT - PING_TIMEOUT) as self._ping_timer:
                 await trio.sleep_forever()
-            await self.send('PING', log=False)
+            await self.send('PING', log=logger.isEnabledFor(logging.DEBUG))
 
     async def serve(self):
         """

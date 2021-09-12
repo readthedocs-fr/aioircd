@@ -54,11 +54,12 @@ class UserState(metaclass=abc.ABCMeta):
         await meth(*params)
 
     @command
-    async def PING(self, *whatever):
-        await self.user.send(f"PONG {' '.join(whatever)}", log=False)
+    async def PING(self, token):
+        host = aioircd.servlocal.get().host
+        await self.user.send(f":{host} PONG {host} {token}", log=logger.isEnabledFor(logging.DEBUG))
 
     @command
-    async def PONG(self, *whatever):
+    async def PONG(self, token):
         pass  # ignored
 
     @command

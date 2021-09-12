@@ -1,6 +1,7 @@
 #!venv/bin/python3
 
 import os
+import random
 import unittest
 import trio
 import contextlib
@@ -90,6 +91,11 @@ class TestProtocol(unittest.TestCase):
         :ip6-localhost 422 bob :MOTD File is missing\r
         """).encode())
     self.assertEqual(type(bob.state), RegisteredState)
+
+    # Bob sends PING
+    token = random.randint(1000, 9999)
+    await bob_sock.send_all(f"PING {token}\r\n".encode())
+    self.assertEqual(await consome_sock(bob_sock), f":ip6-localhost PONG ip6-localhost {token}\r\n".encode())
 
     # Connect Eve, she sends PASS+NICK+USER and consumes the motd
     eve_sock = await open_stream_to_socket_listener(listeners[0])

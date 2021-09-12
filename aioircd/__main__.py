@@ -38,7 +38,7 @@ def main():
     root_logger.handlers.clear()
     root_logger.addHandler(stderr)
 
-    server = Server(ADDR, PORT, PASS)
+    server = Server(HOST, ADDR, PORT, PASS)
     try:
         trio.run(server.serve)
     except Exception:

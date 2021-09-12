@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 class Server:
-    def __init__(self, addr, port, pwd):
+    def __init__(self, host, addr, port, pwd):
+        self.host = host
         self.addr = addr
         self.port = port
         self.pwd = pwd
@@ -44,7 +45,7 @@ class Server:
                 self._nursery.cancel_scope.cancel()
 
     async def serve(self):
-        aioircd.servlocal.set(ServLocal(self.addr, self.pwd, {}, {}))
+        aioircd.servlocal.set(ServLocal(self.host, self.pwd, {}, {}))
         async with trio.open_nursery() as self._nursery:
             self._nursery.start_soon(self._onterm)
             logger.info("Listening on %s port %s.", self.addr, self.port)

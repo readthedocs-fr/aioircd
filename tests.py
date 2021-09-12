@@ -55,7 +55,7 @@ class TestProtocol(unittest.TestCase):
    async with trio.open_nursery() as nursery:
 
     # Create and stack a background IRC server
-    server = Server(ADDR, PORT, PASS)
+    server = Server(HOST, ADDR, PORT, PASS)
     servlocal = ServLocal(HOST, server.pwd, {}, {})
     aioircd.servlocal.set(servlocal)
     listeners = await nursery.start(partial(trio.serve_tcp, server.handle, 0, host='::1'))

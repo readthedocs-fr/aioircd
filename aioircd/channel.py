@@ -28,8 +28,12 @@ class Channel:
 
         async with trio.open_nursery() as self._nursery:
             for message in messages:
-                logging.log(aioircd.IO, "send to %s: %s", self, message)
+                logger.log(aioircd.IO, "send to %s: %s", self, message)
             for user in self.users:
                 if user in skipusers:
                     continue
-                self._nursery.start_soon(partial(user.send, messages, log=False))
+                self._nursery.start_soon(partial(
+                    user.send,
+                    messages,
+                    log=logger.isEnabledFor(logging.DEBUG)
+                ))

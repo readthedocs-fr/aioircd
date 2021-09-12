@@ -21,14 +21,11 @@ class IRCException(Exception):
 
     @classmethod
     def format(cls, *args):
-        print(*args)
-        x = ":{host} {code} {error}".format(
+        return ":{host} {code} {error}".format(
             host=aioircd.servlocal.get().host,
             code=cls.code,
-            error=cls.msg.format(args),
+            error=cls.msg.format(*args),
         )
-        print(x)
-        return x
 
 class ErrUnknownError(IRCException):
     # <user> <command> :<info>

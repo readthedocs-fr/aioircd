@@ -1,3 +1,5 @@
+#!venv/bin/python3
+
 import os
 import unittest
 import trio
@@ -64,20 +66,25 @@ class TestProtocol(unittest.TestCase):
     bob = users[0]
     self.assertEqual(type(bob.state), PasswordState)
 
+    # Bob sends CAP
+    await bob_sock.send_all(b'CAP LS 302\r\n')
+    self.assertRegex(await consome_sock(bob_sock), br":ip6-localhost 400 \[::1\]:\d+ - :Command CAP is unknown\.\r\n")
+    self.assertEqual(type(bob.state), PasswordState)
+
     # Bob sends PASS
     await bob_sock.send_all(b"PASS youwillneverguess\r\n")
-    self.assertEqual(b"", await consome_sock(bob_sock), "The PASS command does not reply")
+    self.assertEqual(await consome_sock(bob_sock), b"", "The PASS command does not reply")
     self.assertEqual(type(bob.state), ConnectedState)
 
     # Bob sends NICK and USER
     await bob_sock.send_all(b"NICK bob\r\n")
-    self.assertEqual(b"", await consome_sock(bob_sock), "Only NICK without USER does not reply")
+    self.assertEqual(await consome_sock(bob_sock), b"", "Only NICK without USER does not reply")
     await bob_sock.send_all(b"USER bob 0 * :Bob\r\n")
-    self.assertEqual(await consome_sock(bob_sock), textwrap.dedent("""\
+    self.assertEqual(await consome_sock(bob_sock), textwrap.dedent(f"""\
         :ip6-localhost 001 bob :Welcome to the Internet Relay Network bob\r
-        :ip6-localhost 002 bob :Your host is ip6-localhost, running version 1.2.0\r
+        :ip6-localhost 002 bob :Your host is ip6-localhost, running version {aioircd.__version__}\r
         :ip6-localhost 003 bob :The server was created someday\r
-        :ip6-localhost 004 bob aioircd 1.2.0  \r
+        :ip6-localhost 004 bob aioircd {aioircd.__version__}  \r
         :ip6-localhost 005 bob AWAYLEN=0 CASEMAPPING=ascii CHANLIMIT=#:,&: CHANMODES= CHANNELLEN=50 CHANTYPES=& ELIST= :are supported by this server\r
         :ip6-localhost 005 bob HOSTLEN=63 KICKLEN=0 MAXLIST= MAXTARGETS=12MODES=0 NICKLEN=15 STATUSMSG= TOPICLEN=0 USERLEN=1 :are supported by this server\r
         :ip6-localhost 422 bob :MOTD File is missing\r

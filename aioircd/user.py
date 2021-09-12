@@ -144,7 +144,7 @@ class User:
                     await self.state.dispatch(*args)
                 except IRCException as exc:
                     logger.warning("Command %s sent by %s failed, code: %s",
-                        command, self, exc.code)
+                        args[0], self, exc.code)
                     await self.send(exc.args[0])
 
     async def terminate(self, kick_msg="Connection terminated by host"):

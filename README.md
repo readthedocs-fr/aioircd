@@ -24,3 +24,4 @@ listed bellow.
 
 The server by default only logs `WARNING` level messages and above. You
 can increase the verbosity by repeating the `-v` option.
+.

@@ -6,7 +6,7 @@ import uuid
 from typing import Union, List
 
 import aioircd
-from aioircd.config import TIMEOUT, PING_TIMEOUT
+from aioircd.config import config as cfg
 from aioircd.exceptions import IRCException, Disconnect
 from aioircd.states import PasswordState, ConnectedState, QuitState
 
@@ -86,7 +86,7 @@ class User:
         automatically disconnected, see :meth:`serve`.
         """
         while True:
-            with trio.move_on_after(TIMEOUT - PING_TIMEOUT) as self._ping_timer:
+            with trio.move_on_after(cfg.TIMEOUT - cfg.PING_TIMEOUT) as self._ping_timer:
                 await trio.sleep_forever()
             await self.send('PING', log=logger.isEnabledFor(logging.DEBUG))
 
@@ -99,8 +99,8 @@ class User:
         while type(self.state) is not QuitState:
 
             # Read the socket in a buffer, wait at most TIMEOUT seconds
-            self._ping_timer.deadline = trio.current_time() + (TIMEOUT - PING_TIMEOUT)
-            with trio.move_on_after(TIMEOUT) as cs:
+            self._ping_timer.deadline = trio.current_time() + (cfg.TIMEOUT - cfg.PING_TIMEOUT)
+            with trio.move_on_after(cfg.TIMEOUT) as cs:
                 try:
                     chunk = await self.stream.receive_some(aioircd.MAXLINELEN)
                 except Exception as exc:
@@ -156,7 +156,7 @@ class User:
         logger.info("Terminate connection of %s", self)
         if type(self.state) != QuitState:
             await self.state.QUIT(f":{kick_msg}".split(' '), kick=True)
-        with trio.move_on_after(PING_TIMEOUT) as cs:
+        with trio.move_on_after(cfg.PING_TIMEOUT) as cs:
             await self.stream.send_eof()
         await self.stream.aclose()
         self._nursery.cancel_scope.cancel()

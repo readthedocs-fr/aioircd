@@ -1,14 +1,14 @@
-__all__ = ['HOST', 'ADDR', 'PORT', 'PASS']
-
 import logging
 import os
 from socket import gethostname, gethostbyname
+from types import SimpleNamespace
 
 
-HOST = os.getenv('HOST', gethostname())
-ADDR = os.getenv('ADDR', gethostbyname(HOST))
-PORT = int(os.getenv('PORT', 6667))
-PASS = os.getenv('PASS')
-TIMEOUT = int(os.getenv('TIMEOUT', 60))
-PING_TIMEOUT = int(os.getenv('PING_TIMEOUT', 5))
-loglevel = os.getenv('LOGLEVEL', 'WARNING')
+config = SimpleNamespace()
+config.HOST = os.getenv('HOST', gethostname())
+config.ADDR = os.getenv('ADDR', gethostbyname(config.HOST))
+config.PORT = int(os.getenv('PORT', 6667))
+config.PASS = os.getenv('PASS')
+config.TIMEOUT = int(os.getenv('TIMEOUT', 60))
+config.PING_TIMEOUT = int(os.getenv('PING_TIMEOUT', 5))
+config.LOGLEVEL = os.getenv('LOGLEVEL', 'WARNING')

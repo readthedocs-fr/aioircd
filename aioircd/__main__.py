@@ -4,7 +4,7 @@ import sys
 import trio
 
 import aioircd
-from aioircd.config import *
+from aioircd.config import config as cfg
 from aioircd.server import Server
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def main():
     root_logger.handlers.clear()
     root_logger.addHandler(stderr)
 
-    server = Server(HOST, ADDR, PORT, PASS)
+    server = Server(cfg.HOST, cfg.ADDR, cfg.PORT, cfg.PASS)
     try:
         trio.run(server.serve)
     except Exception:

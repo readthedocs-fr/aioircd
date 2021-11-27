@@ -9,6 +9,31 @@ from aioircd.states import *
 from .common import AsyncTestCase, TestIRC, waitfor
 
 
+class TestProtocole(AsyncTestCase, TestIRC):
+    async def atest_nick_collision(self, nursery):
+
+        await self.start_server(nursery)
+
+        bob = await self.connect_user()
+        await bob.usend("NICK bob")
+        self.assertFalse(await bob.urecv(), "Nickname should not be used.")
+
+        eve = await self.connect_user()
+
+        with self.assertLogs('aioircd.user', 'WARNING'):
+            await eve.usend("NICK bob")
+            self.assertIn("Nickname is already in use", await eve.urecv())
+        await eve.usend("QUIT")
+        await eve.waitforstate(QuitState)
+
+        await bob.usend("QUIT")
+        await bob.waitforstate(QuitState)
+
+        bob = await self.connect_user()
+        await bob.usend("NICK bob")
+        self.assertFalse(await bob.urecv(), "Nickname should not be used.")
+
+
 class TestTour(AsyncTestCase, TestIRC):
      async def atest_tour(self, nursery):
         await self.start_server(nursery)

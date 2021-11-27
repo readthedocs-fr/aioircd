@@ -107,9 +107,6 @@ class UserState(metaclass=abc.ABCMeta):
         self.user.channels.clear()
         self.user.state = QuitState(self.user)
 
-        if type(self) not in (PasswordState, ConnectedState):
-            servlocal.users.pop(self.user.nick)
-
 
 class PasswordState(UserState):
     @command
@@ -316,6 +313,9 @@ class RegisteredState(UserState):
 
 class QuitState(UserState):
     """ The user sent the QUIT command, no more message should be processed """
+    def __init__(self, user):
+        super().__init__(user)
+        user.nick = None
 
     @command
     async def PING(self, server1=None, server2=None):

@@ -59,7 +59,7 @@ class UserState(metaclass=abc.ABCMeta):
         await self.user.send(f":{host} PONG {host} {token}", log=logger.isEnabledFor(logging.DEBUG))
 
     @command
-    async def PONG(self, token):
+    async def PONG(self, token=None):
         pass  # ignored
 
     @command

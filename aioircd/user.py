@@ -126,7 +126,7 @@ class User:
                 # Parse the message
                 try:
                     if not (match := message_re.match(message.decode())):
-                        raise SyntaxError(f"Couldn't parse {line}")
+                        raise SyntaxError(f"Couldn't parse {message}")
                 except UnicodeDecodeError as exc:
                     raise Disconnect("Gibberish") from exc
                 except SyntaxError as exc:

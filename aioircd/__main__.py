@@ -1,14 +1,16 @@
+import argparse
 import logging
 import os
 import sys
+import textwrap
 import trio
+from socket import gethostname, gethostbyname
 
 import aioircd
 from aioircd.config import config as cfg
 from aioircd.server import Server
 
 logger = logging.getLogger(__name__)
-
 
 # Color the [LEVEL] part of messages, need new terminal on Windows
 # https://github.com/odoo/odoo/blob/13.0/odoo/netsvc.py#L57-L100
@@ -45,5 +47,29 @@ def main():
         logger.critical("Dead", exc_info=True)
     finally:
         logging.shutdown()
+
+# Dummy argparse, used only for --help and --version
+parser = argparse.ArgumentParser(
+    prog=aioircd.__name__,
+    usage=f"{sys.executable} -m {aioircd.__name__}",
+    description="single-server minimalist IRC",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog=textwrap.dedent(f"""\
+        environment variables:
+          HOST           public domain name (default: {gethostname()})
+          ADDR           ip address to bind (default: {gethostbyname(cfg.HOST)})
+          PORT           port to bind (default: 6667)
+          PASS           server password (default: )
+          TIMEOUT        kick inactive users after x seconds (default: 60)
+          PING_TIMEOUT   PING inactive users x seconds before timeout (default: 5)
+          LOGLEVEL       logging verbosity (default: WARNING)
+    """)
+)
+parser.add_argument(
+    '-V', '--version',
+    action='version',
+    version=f'{aioircd.__name__} {aioircd.__version__}',
+)
+parser.parse_args()
 
 main()

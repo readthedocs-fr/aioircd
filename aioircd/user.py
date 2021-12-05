@@ -50,6 +50,7 @@ class User:
         self.state = (PasswordState if servlocal.pwd else ConnectedState)(self)
         self.channels = set()
         self._ping_timer = trio.CancelScope()  # dummy
+        self._send_lock = trio.StrictFIFOLock()
 
     def __str__(self):
         if self.nick:
@@ -166,7 +167,8 @@ class User:
         if isinstance(messages, str):
             messages = [messages]
 
-        if log:
-            for msg in messages:
-                logger.log(aioircd.IO, "send to %s: %s", self, msg)
-        await self.stream.send_all(b"".join(f"{msg}\r\n".encode() for msg in messages))
+        async with self._send_lock:
+            if log:
+                for msg in messages:
+                    logger.log(aioircd.IO, "send to %s: %s", self, msg)
+            await self.stream.send_all(b"".join(f"{msg}\r\n".encode() for msg in messages))

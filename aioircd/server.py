@@ -4,6 +4,7 @@ import signal
 import trio
 
 import aioircd
+from aioircd import sdnotify
 from aioircd.exceptions import Disconnect
 from aioircd.user import User
 
@@ -37,11 +38,17 @@ class Server:
 
         logger.info("Connection with %s closed.", user)
 
+    def started(self, _listeners):
+        sdnotify.ready()
+        aioircd.update_status()
+
     async def _onterm(self):
         with trio.open_signal_receiver(signal.SIGTERM, signal.SIGINT) as signal_aiter:
             async for _ in signal_aiter:
                 if self._nursery.cancel_scope.cancel_called:
                     raise KeyboardInterrupt()
+                sdnotify.stopping()
+                sdnotify.status("Terminating connections...")
                 self._nursery.cancel_scope.cancel()
 
     async def serve(self):
@@ -49,7 +56,7 @@ class Server:
         async with trio.open_nursery() as self._nursery:
             self._nursery.start_soon(self._onterm)
             logger.info("Listening on %s port %s.", self.addr, self.port)
-            await trio.serve_tcp(self.handle, self.port, host=self.addr)
+            await trio.serve_tcp(self.handle, self.port, host=self.addr, task_status=self)
 
 
 @dataclasses.dataclass(eq=False)

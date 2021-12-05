@@ -17,5 +17,15 @@ MAXLINELEN = 512
 import aioircd.channel
 import aioircd.exceptions
 import aioircd.server
+import aioircd.sdnotify
 import aioircd.states
 import aioircd.user
+
+
+def update_status():
+    sl = servlocal.get()
+    aioircd.sdnotify.status(
+        f"Listening on {cfg.ADDR} ({cfg.HOST}) port {cfg.PORT}. "
+        f"Currently {len(sl.users)} registered users"
+        f" in {len(sl.channels)} channels."
+    )

@@ -158,6 +158,7 @@ class ConnectedState(UserState):
     async def register(self):
         servlocal = aioircd.servlocal.get()
         self.user.state = RegisteredState(self.user)
+        aioircd.update_status()
         await self.user.send(textwrap.dedent("""\
             :{host} 001 {nick} :Welcome to the Internet Relay Network {nick}
             :{host} 002 {nick} :Your host is {host}, running version {version}
@@ -224,6 +225,7 @@ class RegisteredState(UserState):
             if not chan:
                 chan = Channel(channel)
                 servlocal.channels[chan.name] = chan
+                aioircd.update_status()
             chan.users.add(self.user)
             self.user.channels.add(chan)
 
@@ -251,6 +253,7 @@ class RegisteredState(UserState):
             chan.users.remove(self.user)
             if not chan.users:
                 servlocal.channels.pop(chan.name)
+                aioircd.update_status()
 
             if reason:
                 await chan.send(f":{self.user.nick} PART {channel} :{reason}")
@@ -316,6 +319,7 @@ class QuitState(UserState):
     def __init__(self, user):
         super().__init__(user)
         user.nick = None
+        aioircd.update_status()
 
     @command
     async def PING(self, server1=None, server2=None):
